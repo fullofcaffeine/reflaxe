@@ -5,6 +5,7 @@ package;
 
 // Import relevant Haxe macro types.
 import haxe.macro.Expr;
+import haxe.macro.Context;
 import haxe.macro.Type;
 
 // Required Reflaxe types.
@@ -21,6 +22,7 @@ using reflaxe.helpers.SyntaxHelper;
 using reflaxe.helpers.ModuleTypeHelper;
 using reflaxe.helpers.NameMetaHelper;
 using reflaxe.helpers.TypeHelper;
+using reflaxe.helpers.ClassFieldHelper;
 
 // This is a tool built into Reflaxe for modifying functions
 // before typing using @:build macros. 
@@ -75,6 +77,22 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		// Other types will be added to the compilation queue due to
 		// `addModuleTypeForCompilation` calls made while compiling the main expression.
 		setExtraFile("Main.testout", "func main():\n" + compileExpression(getMainExpr()).tab());
+	}
+
+	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {
+		final lazyType = Context.getType("LazyAddedType");
+		switch(lazyType) {
+			case TInst(classRef, _):
+				final classType = classRef.get();
+				final method = classType.statics.get().filter(field -> field.name == "injectedMethod")[0];
+				if(method.findFuncData(classType, true) == null) {
+					Context.error("Function information not found for lazily typed field.", method.pos);
+				}
+				moduleTypes.push(TClassDecl(classRef));
+			case _:
+				Context.error("Expected LazyAddedType to resolve to a class.", Context.currentPos());
+		}
+		return moduleTypes;
 	}
 
 	// This is the function from the BaseCompiler to override to compile Haxe classes.
