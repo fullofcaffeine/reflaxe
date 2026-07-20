@@ -12,6 +12,7 @@
 --macro reflaxe.ReflectCompiler.Start()
 --macro RemovePureExpressionsTest.run()
 --macro SemanticLifecycleTest.run()
+-D reflaxe_lifecycle_test
 
 # ---
 # COMPILER LIB
