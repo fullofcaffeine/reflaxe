@@ -9,7 +9,12 @@ import reflaxe.preprocessors.implementations.RemovePureExpressionsImpl;
 /** Focused regressions for side-effect and metadata preservation. */
 class RemovePureExpressionsTest {
 	#if macro
+	/** Registers typed-expression assertions after initialization macros finish. */
 	public static function run():Void {
+		Context.onAfterInitMacros(execute);
+	}
+
+	static function execute():Void {
 		assertNestedAssignmentSurvives();
 		assertNestedBlockResultSurvives();
 		assertContinuePreservesPriorEffects();
