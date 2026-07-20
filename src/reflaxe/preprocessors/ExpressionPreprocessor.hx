@@ -170,6 +170,24 @@ enum ExpressionPreprocessor {
 	The functions used with `ExpressionPreprocessor`.
 **/
 class ExpressionPreprocessorHelper {
+	/** Returns a stable target-neutral identifier for lifecycle contracts. **/
+	public static function lifecycleId(self: ExpressionPreprocessor): String {
+		return switch(self) {
+			case SanitizeEverythingIsExpression(_): "sanitize-everything-is-expression";
+			case RemoveTemporaryVariables(_): "remove-temporary-variables";
+			case PreventRepeatVariables(_): "prevent-repeat-variables";
+			case WrapLambdaCaptureVariablesInArray(_): "wrap-lambda-captures";
+			case RemovePureExpressions: "remove-pure-expressions";
+			case RemoveSingleExpressionBlocks: "remove-single-expression-blocks";
+			case RemoveConstantBoolIfs: "remove-constant-bool-ifs";
+			case RemoveUnnecessaryBlocks: "remove-unnecessary-blocks";
+			case RemoveReassignedVariableDeclarations: "remove-reassigned-variable-declarations";
+			case RemoveLocalVariableAliases: "remove-local-variable-aliases";
+			case MarkUnusedVariables: "mark-unused-variables";
+			case Custom(preprocessor): preprocessor.semanticLifecycleId();
+		}
+	}
+
 	/**
 		This is where the implementations for the builtin `ExpressionPreprocessor` are.
 	**/

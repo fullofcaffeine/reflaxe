@@ -14,6 +14,7 @@ import reflaxe.data.ClassVarData;
 
 using reflaxe.helpers.NameMetaHelper;
 using reflaxe.helpers.NullableMetaAccessHelper;
+using reflaxe.helpers.TypeHelper;
 
 /**
 	Quick static extensions to help with `ClassField`.
@@ -50,36 +51,41 @@ class ClassFieldHelper {
 	static var findFuncData_cache: Map<String, ClassFuncData> = [];
 
 	/**
+		Starts a fresh compilation request without retaining mutable field data.
+
+		The macro server can keep this class alive across builds, so both caches
+		must be cleared before reading the next request's host compiler objects.
+	**/
+	public static function resetDataCaches(): Void {
+		findVarData_cache = [];
+		findFuncData_cache = [];
+	}
+
+	/**
 		Generates a unique `String` id for a `ClassField`.
 	**/
-	static function generateId(isVar: Bool, field: ClassField, clsType: ClassType) {
-		return if(isVar) {
-			'${clsType.pack.join(".")} ${clsType.name} ${field.name}';
-		} else {
-			var id = '${clsType.pack.join(".")} ${clsType.name} ${field.name}';
-			if(field.overloads.get().length != 0) {
-				id += switch(resolveLazyType(field.type)) {
-					case TFun(args, ret): 
-						args.map(a -> a.name + " " + Std.string(a.t)) + ":" + Std.string(ret);
-					case _:
-						"";
-				}
-			}
-			id;
+	static function generateId(isVar: Bool, field: ClassField, clsType: ClassType, isStatic: Bool) {
+		final owner = '${clsType.module}|${clsType.name}';
+		final category = '${isStatic ? "static" : "instance"}|${isVar ? "var" : "function"}';
+		final signature = switch(resolveLazyType(field.type)) {
+			case TFun(args, ret):
+				args.map(arg -> '${arg.opt ? "optional" : "required"}:${arg.t.getCanonicalId()}').join(",") + '->${ret.getCanonicalId()}';
+			case type:
+				type.getCanonicalId();
 		}
+		return '$owner|$category|${field.name}|generics:${field.params.length}|$signature';
 	}
 
 	/**
 		Extracts the `ClassVarData` from a variable `ClassField`.
 	**/
 	public static function findVarData(field: ClassField, clsType: ClassType, isStatic: Null<Bool> = null): Null<ClassVarData> {
-		final id = generateId(true, field, clsType);
-		if(findVarData_cache.exists(id)) {
-			return findVarData_cache.get(id);
-		}
-
 		if(isStatic == null) {
 			isStatic = clsType.statics.get().filter(f -> f.name == field.name).length > 0;
+		}
+		final id = generateId(true, field, clsType, isStatic);
+		if(findVarData_cache.exists(id)) {
+			return findVarData_cache.get(id);
 		}
 
 		return switch(field.kind) {
@@ -108,11 +114,6 @@ class ClassFieldHelper {
 		doesn't, it falls back on the limited info within `TFun`.
 	**/
 	public static function findFuncData(field: ClassField, clsType: ClassType, isStatic: Null<Bool> = null): Null<ClassFuncData> {
-		final id = generateId(false, field, clsType);
-		if(findFuncData_cache.exists(id)) {
-			return findFuncData_cache.get(id);
-		}
-
 		// If `isStatic` is not explicitly provided, manually check if is static.
 		if(isStatic == null) {
 			isStatic = false;
@@ -122,6 +123,10 @@ class ClassFieldHelper {
 					break;
 				}
 			}
+		}
+		final id = generateId(false, field, clsType, isStatic);
+		if(findFuncData_cache.exists(id)) {
+			return findFuncData_cache.get(id);
 		}
 
 		// Extract TFunc

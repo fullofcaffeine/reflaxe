@@ -28,6 +28,9 @@ jobs:
         working-directory: test
         run: haxe Test.hxml
 
+      - name: Test compiler-server revision isolation
+        run: test/test-server-revisions.sh
+
   build_latest:
     runs-on: ubuntu-latest
     steps:
@@ -45,3 +48,6 @@ jobs:
       - name: Run Test
         working-directory: test
         run: haxe Test.hxml
+
+      - name: Test compiler-server revision isolation
+        run: test/test-server-revisions.sh

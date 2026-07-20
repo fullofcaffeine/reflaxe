@@ -137,6 +137,22 @@ class TypeHelper {
 		}
 	}
 
+	/**
+		Returns the host compiler's normalized type identity for revision keys.
+
+		Macro compilation uses Haxe's type renderer so lazy nested function types
+		cannot produce a different key merely because another caller resolved them
+		first. Native hosts fall back to Reflaxe's program-local type identity until
+		their normalized adapter supplies an equivalent renderer.
+	**/
+	public static function getCanonicalId(t: Type): String {
+		#if macro
+		return TypeTools.toString(t);
+		#else
+		return getUniqueId(t);
+		#end
+	}
+
 	public static function equals(type: Type, other: Type): Bool {
 		if(isNumberType(type) && isNumberType(other)) return true;
 		return Std.string(type) == Std.string(other);
