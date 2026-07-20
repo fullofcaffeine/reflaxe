@@ -21,8 +21,8 @@ jobs:
       - name: Check Haxe Version
         run: haxe -version
 
-      - name: Install Reflaxe
-        run: haxelib git reflaxe https://github.com/SomeRanDev/reflaxe.git
+      - name: Use checked-out Reflaxe
+        run: haxelib dev reflaxe "$GITHUB_WORKSPACE"
 
       - name: Make New Project Directory
         run: mkdir TestProject
@@ -49,8 +49,8 @@ jobs:
       - name: Check Haxe Version
         run: haxe -version
 
-      - name: Install Reflaxe
-        run: haxelib git reflaxe https://github.com/SomeRanDev/reflaxe.git
+      - name: Use checked-out Reflaxe
+        run: haxelib dev reflaxe "$GITHUB_WORKSPACE"
 
       - name: Make New Project Directory
         run: mkdir TestProject
