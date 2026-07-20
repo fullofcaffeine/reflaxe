@@ -33,12 +33,21 @@ private class SemanticFamilyState {
 **/
 class SemanticLifecycle {
 	final options:SemanticLifecycleOptions;
+	final observesExactBodyRevisions:Bool;
 	final trace:Array<SemanticLifecycleTraceEvent> = [];
 
 	public var pipelineRevision(get, never):String;
 
 	public function new(options:SemanticLifecycleOptions) {
 		this.options = options;
+		var observesExactBodyRevisions = options.captureTrace;
+		for (family in options.families) {
+			if (family.binding == SemanticArtifactBinding.ExactBodyRevision) {
+				observesExactBodyRevisions = true;
+				break;
+			}
+		}
+		this.observesExactBodyRevisions = observesExactBodyRevisions;
 		if (options.schemaVersion != SemanticLifecycleOptions.CURRENT_SCHEMA_VERSION) {
 			throw new SemanticLifecycleError("reflaxe:unsupported-semantic-lifecycle-schema",
 				'Expected lifecycle schema ${SemanticLifecycleOptions.CURRENT_SCHEMA_VERSION}, but the target requested ${options.schemaVersion}.');
@@ -71,42 +80,52 @@ class SemanticLifecycle {
 
 	/** Applies and validates the configured preprocessor sequence. **/
 	public function process(data:ClassFuncData, compiler:BaseCompiler, preprocessors:Array<ExpressionPreprocessor>):Void {
+		// Establish an exact entry revision so mutations made before this lifecycle
+		// cannot be attributed to its first preprocessor.
 		data.synchronizeBodyRevision();
 		final states = [
 			for (family in options.families) {
 				final artifacts = takeSnapshot(family, data, "initial");
-				new SemanticFamilyState(family, artifacts.length == 0 ? Absent : Valid(data.bodyRevision.id, artifacts));
+				new SemanticFamilyState(family, artifacts.length == 0 ? Absent : Valid(revisionFor(family, data), artifacts));
 			}
 		];
 
 		for (index in 0...preprocessors.length) {
 			final preprocessor = preprocessors[index];
 			final preprocessorId = '$index:${preprocessor.lifecycleId()}';
-			final beforeRevision = data.bodyRevision.id;
+			final beforeRevisionByFamily:Map<String, String> = [];
 			final beforeByFamily:Map<String, Array<SemanticArtifactSnapshot>> = [];
 			final actionByFamily:Map<String, SemanticPreprocessorAction> = [];
 
 			for (state in states) {
 				final before = takeSnapshot(state.family, data, preprocessorId);
-				assertStateStillMatches(state, before, data.bodyRevision.id, preprocessorId);
+				final beforeRevision = revisionFor(state.family, data);
+				assertStateStillMatches(state, before, beforeRevision, preprocessorId);
 				final action = state.family.actionFor(preprocessor.lifecycleId());
 				if (action == Reject && !isAbsent(state.status, before)) {
 					contractError(preprocessorId, state.family.id, 'Reject was declared, but ${before.length} artifact(s) are active.');
 				}
 				beforeByFamily.set(state.family.id, before);
+				beforeRevisionByFamily.set(state.family.id, beforeRevision);
 				actionByFamily.set(state.family.id, action);
 				record(data, preprocessorId, "before", state.family.id, action, before);
 			}
 
 			preprocessor.process(data, compiler);
-			data.synchronizeBodyRevision();
+			// Structural families validate their own markers directly at every pass
+			// boundary. They only need another complete-body observation at exit so
+			// the revision handed to target planning is current.
+			if (observesExactBodyRevisions || index == preprocessors.length - 1) {
+				data.synchronizeBodyRevision();
+			}
 
 			for (state in states) {
 				final family = state.family;
 				final before:Array<SemanticArtifactSnapshot> = cast beforeByFamily.get(family.id);
+				final beforeRevision:String = cast beforeRevisionByFamily.get(family.id);
 				final after = takeSnapshot(family, data, preprocessorId);
 				final action:SemanticPreprocessorAction = cast actionByFamily.get(family.id);
-				state.status = applyAction(state, preprocessorId, action, beforeRevision, data.bodyRevision.id, before, after);
+				state.status = applyAction(state, preprocessorId, action, beforeRevision, revisionFor(family, data), before, after);
 				record(data, preprocessorId, "after", family.id, action, after);
 			}
 		}
@@ -114,15 +133,16 @@ class SemanticLifecycle {
 		for (state in states) {
 			final family = state.family;
 			final artifacts = takeSnapshot(family, data, "final");
+			final finalRevision = revisionFor(family, data);
 			switch (state.status) {
 				case Absent:
 					if (artifacts.length != 0) {
 						contractError("final", family.id, "Artifacts appeared without a declared replacing preprocessor.");
 					}
 				case Valid(revision, expected):
-					if (revision != data.bodyRevision.id) {
+					if (revision != finalRevision) {
 						throw new SemanticLifecycleError("reflaxe:planned-body-revision-mismatch",
-							'Function "${data.id}" family "${family.id}" was validated for body $revision, but emission received ${data.bodyRevision.id}.');
+							'Function "${data.id}" family "${family.id}" was validated for body $revision, but emission received $finalRevision.');
 					}
 					assertSameArtifacts("final", family.id, expected, artifacts);
 				case Invalidated(preprocessorId, _):
@@ -135,6 +155,20 @@ class SemanticLifecycle {
 				contractError("final", family.id, finalError);
 			}
 			record(data, "final", "final", family.id, Preserve, artifacts);
+		}
+	}
+
+	/**
+		Returns the revision identity required by one artifact family.
+
+		A structural envelope is checked directly before and after each pass, so a
+		request-local generation number is sufficient. Exact-body artifacts and
+		opt-in traces retain the full deterministic body digest.
+	**/
+	function revisionFor(family:SemanticArtifactFamily, data:ClassFuncData):String {
+		return switch (family.binding) {
+			case ExactBodyRevision: data.bodyRevision.id;
+			case StructuralEnvelope: options.captureTrace ? data.bodyRevision.id : 'generation:${data.bodyRevision.generation}';
 		}
 	}
 

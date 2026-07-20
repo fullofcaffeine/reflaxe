@@ -14,23 +14,51 @@ import haxe.macro.Type.TypedExpr;
 **/
 class FunctionBodyRevision {
 	public final generation:Int;
-	public final digest:String;
-	public final id:String;
+	public var digest(get, never):String;
+	public var id(get, never):String;
 
-	public function new(generation:Int, digest:String) {
+	final expression:Null<TypedExpr>;
+	var cachedDigest:Null<String>;
+
+	#if reflaxe_lifecycle_test
+	static var digestCallCount:Int = 0;
+	#end
+
+	public function new(generation:Int, expression:Null<TypedExpr>, cachedDigest:Null<String> = null) {
 		this.generation = generation;
-		this.digest = digest;
-		this.id = '$generation:$digest';
+		this.expression = expression;
+		this.cachedDigest = cachedDigest;
+	}
+
+	/**
+		Returns the stable body digest, computing it only when a caller needs it.
+
+		Most structural preprocessors only need the generation counter. Deferring
+		the expensive typed-expression rendering avoids rebuilding the same large
+		String after every pass while preserving an exact digest for plan sealing,
+		tracing, and exact-body analyses.
+	**/
+	function get_digest():String {
+		var result = cachedDigest;
+		if (result == null) {
+			result = digestExpression(expression);
+			cachedDigest = result;
+		}
+		return result;
+	}
+
+	inline function get_id():String {
+		return '$generation:$digest';
 	}
 
 	/** Creates the first revision for a possibly bodiless function. **/
 	public static function initial(expr:Null<TypedExpr>):FunctionBodyRevision {
-		return new FunctionBodyRevision(0, digestExpression(expr));
+		return new FunctionBodyRevision(0, expr);
 	}
 
 	/** Creates the next revision after an explicit body replacement. **/
 	public function next(expr:Null<TypedExpr>):FunctionBodyRevision {
-		return new FunctionBodyRevision(generation + 1, digestExpression(expr));
+		return new FunctionBodyRevision(generation + 1, expr);
 	}
 
 	/**
@@ -39,8 +67,24 @@ class FunctionBodyRevision {
 	**/
 	public function observe(expr:Null<TypedExpr>):FunctionBodyRevision {
 		final observedDigest = digestExpression(expr);
-		return observedDigest == digest ? this : new FunctionBodyRevision(generation + 1, observedDigest);
+		if (cachedDigest == null) {
+			cachedDigest = observedDigest;
+			return this;
+		}
+		return observedDigest == cachedDigest ? this : new FunctionBodyRevision(generation + 1, expr, observedDigest);
 	}
+
+	#if reflaxe_lifecycle_test
+	/** Resets the deterministic digest counter used by focused lifecycle tests. **/
+	public static function resetDigestCallCount():Void {
+		digestCallCount = 0;
+	}
+
+	/** Returns how often a test compilation rendered and hashed a typed body. **/
+	public static function getDigestCallCount():Int {
+		return digestCallCount;
+	}
+	#end
 
 	/**
 		Returns a path-independent digest of Haxe's typed-expression rendering.
@@ -51,6 +95,9 @@ class FunctionBodyRevision {
 		digest is supplied by that adapter.
 	**/
 	public static function digestExpression(expr:Null<TypedExpr>):String {
+		#if reflaxe_lifecycle_test
+		digestCallCount += 1;
+		#end
 		if (expr == null) {
 			return Sha256.encode("<bodiless>");
 		}

@@ -47,7 +47,9 @@ class SemanticLifecycleTest {
 		assertPreserveLossNamesTheOwner();
 		assertInvalidationRequiresRebuild();
 		assertInvalidationThenRebuildSucceeds();
+		assertStructuralLifecycleDoesNotRehashEveryPass();
 		assertExactBodyRevisionCannotSurviveReplacement();
+		assertExactBodyRevisionDetectsInPlaceMutation();
 		assertTraceIsOutputInert();
 		ClassFieldHelper.resetDataCaches();
 	}
@@ -136,6 +138,35 @@ class SemanticLifecycleTest {
 		final error = expectLifecycleError(() -> lifecycle(family).process(data, compiler(), [Custom(new WrapRoot())]));
 		if (data.bodyRevision.id == before || error.code != "reflaxe:semantic-contract-violation") {
 			Context.fatalError("root replacement did not invalidate an exact-body analysis", Context.currentPos());
+		}
+	}
+
+	static function assertStructuralLifecycleDoesNotRehashEveryPass():Void {
+		final data = markedData();
+		final initialGeneration = data.bodyRevision.generation;
+		final family = new TestEnvelopeFamily(StructuralEnvelope, [NoOp.ID => Preserve, MutateBodyInPlace.ID => Preserve]);
+		FunctionBodyRevision.resetDigestCallCount();
+		lifecycle(family).process(data, compiler(), [Custom(new NoOp()), Custom(new MutateBodyInPlace()), Custom(new NoOp())]);
+		if (FunctionBodyRevision.getDigestCallCount() != 2) {
+			Context.fatalError("a structural lifecycle did more than its entry and exit body-revision checks", Context.currentPos());
+		}
+		if (data.bodyRevision.generation <= initialGeneration) {
+			Context.fatalError("the exit check did not record an in-place body change", Context.currentPos());
+		}
+		final firstId = data.bodyRevision.id;
+		final secondId = data.bodyRevision.id;
+		if (firstId != secondId || FunctionBodyRevision.getDigestCallCount() != 2) {
+			Context.fatalError("a lazily requested body revision was not stable and cached", Context.currentPos());
+		}
+	}
+
+	static function assertExactBodyRevisionDetectsInPlaceMutation():Void {
+		final data = markedData();
+		final family = new TestEnvelopeFamily(ExactBodyRevision, [MutateBodyInPlace.ID => Preserve]);
+		FunctionBodyRevision.resetDigestCallCount();
+		final error = expectLifecycleError(() -> lifecycle(family).process(data, compiler(), [Custom(new MutateBodyInPlace())]));
+		if (error.code != "reflaxe:semantic-contract-violation" || FunctionBodyRevision.getDigestCallCount() < 2) {
+			Context.fatalError("an exact-body lifecycle did not detect an in-place body change", Context.currentPos());
 		}
 	}
 
@@ -252,7 +283,7 @@ private class TestEnvelopeFamily extends SemanticArtifactFamily {
 				case TMeta(metadata, inner) if (metadata.name == METADATA):
 					result.push({
 						id: 'origin-${ordinal++}',
-						fingerprint: FunctionBodyRevision.digestExpression(inner),
+						fingerprint: TypedExprTools.toString(inner),
 						origin: "synthetic-test"
 					});
 				case _:
@@ -351,5 +382,21 @@ private class NoOp extends BasePreprocessor {
 		return ID;
 
 	public function process(data:ClassFuncData, compiler:BaseCompiler):Void {}
+}
+
+private class MutateBodyInPlace extends BasePreprocessor {
+	public static inline final ID = "test.mutate-body-in-place";
+
+	public function new() {}
+
+	override public function semanticLifecycleId():String
+		return ID;
+
+	public function process(data:ClassFuncData, compiler:BaseCompiler):Void {
+		if (data.expr == null)
+			return;
+		final child:TypedExpr = {expr: data.expr.expr, pos: data.expr.pos, t: data.expr.t};
+		data.expr.expr = TParenthesis(child);
+	}
 }
 #end
