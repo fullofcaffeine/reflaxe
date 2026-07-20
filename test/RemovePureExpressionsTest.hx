@@ -11,6 +11,7 @@ class RemovePureExpressionsTest {
 	#if macro
 	public static function run():Void {
 		assertNestedAssignmentSurvives();
+		assertNestedBlockResultSurvives();
 		assertContinuePreservesPriorEffects();
 		assertMetadataEnvelopeSurvives();
 		assertPureExpressionIsRemoved();
@@ -52,6 +53,47 @@ class RemovePureExpressionsTest {
 		}
 		if (before != 1 || after != before) {
 			Context.fatalError('nested assignment count changed from $before to $after', position);
+		}
+	}
+
+	static function assertNestedBlockResultSurvives():Void {
+		final position = Context.currentPos();
+		final typed = Context.typeExpr(macro {
+			var condition = true;
+			var result = if (condition) {
+				Sys.println("effect");
+				41;
+			} else {
+				0;
+			}
+			Sys.println(result);
+		});
+
+		function resultCount(expression:TypedExpr):Int {
+			var count = 0;
+			function visit(child:TypedExpr):Void {
+				switch (child.expr) {
+					case TConst(TInt(41)):
+						count += 1;
+					case _:
+				}
+				TypedExprTools.iter(child, visit);
+			}
+			visit(expression);
+			return count;
+		}
+
+		final before = resultCount(typed);
+		final processed = RemovePureExpressionsImpl.process(switch (typed.expr) {
+			case TBlock(expressions): expressions;
+			case _: [typed];
+		});
+		var after = 0;
+		for (expression in processed) {
+			after += resultCount(expression);
+		}
+		if (before != 1 || after != before) {
+			Context.fatalError('nested block result count changed from $before to $after', position);
 		}
 	}
 

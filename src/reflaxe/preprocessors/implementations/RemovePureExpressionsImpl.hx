@@ -53,15 +53,20 @@ class RemovePureExpressionsImpl {
 	}
 
 	/**
-		Recursively walks the expression tree. At each `TBlock`,
-		removes pure expressions from its element list via `blockElement`.
+		Recursively walks the expression tree. Nested blocks retain their final
+		expression because it may provide a value to the surrounding expression;
+		only the preceding statement positions are eligible for cleanup here.
 	**/
 	static function processRecursive(expr: TypedExpr): TypedExpr {
 		final mapped = haxe.macro.TypedExprTools.map(expr, processRecursive);
 		return switch(mapped.expr) {
-			case TBlock(el): {
-				final result = OptimizerTexpr.blockElement([], el);
+			case TBlock(el) if(el.length > 0): {
+				final result = OptimizerTexpr.blockElement([], el.slice(0, -1));
 				result.reverse();
+				final reachesResult = result.length == 0 || !result[result.length - 1].expr.match(TContinue);
+				if(reachesResult) {
+					result.push(el[el.length - 1]);
+				}
 				mapped.copy(TBlock(result));
 			}
 			case _: {
