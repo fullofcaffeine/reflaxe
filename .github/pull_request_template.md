@@ -3,6 +3,16 @@
 <!--
 Explain the practical problem and why it belongs in the Reflaxe framework.
 Lead with old behavior that a compiler author or user can observe.
+Assume the reader knows Haxe but is new to Reflaxe internals.
+-->
+
+### Reader model and terms
+
+<!--
+Define every specialized term before it carries the explanation, including an
+ordinary word used in a narrower compiler-specific way. State what it means
+here, why it matters, and add a small example when helpful. Link the most useful
+API, source contract, architecture note, or focused test.
 -->
 
 ### Minimal Haxe reproduction
@@ -31,7 +41,11 @@ After:
 
 ## How
 
-<!-- Explain the ownership seam, important invariants, and why this design is target-neutral. -->
+<!--
+Explain the design as ordered actions before using compressed internal labels.
+Then name the exact owner, invariants, and APIs, and explain why the design is
+target-neutral.
+-->
 
 ## Outcome
 
@@ -57,6 +71,10 @@ After:
 
 <!-- Give exact commands, Haxe versions, negative tests, compatibility clients, and CI links. -->
 
+- [ ] A capable Haxe newcomer can understand the problem/outcome before internal symbols appear.
+- [ ] Specialized or overloaded terms are defined on first use.
+- [ ] Compound phase names are expanded into concrete ordered actions.
+- [ ] Primary references are linked where they help the reader go deeper.
 - [ ] Focused framework regression passes.
 - [ ] Declared Haxe matrix passes when relevant.
 - [ ] Risk-routed family/integration canary passes when relevant.
