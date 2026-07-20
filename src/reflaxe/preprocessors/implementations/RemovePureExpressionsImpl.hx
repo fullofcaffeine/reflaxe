@@ -209,13 +209,13 @@ private class OptimizerTexpr {
 				TSwitch(_), TArrayDecl(_), TBlock(_),
 				TObjectDecl(_), TVar(_):
 			{
-				var isPure = true;
+				var foundSideEffect = false;
 				TypedExprTools.iter(expr, function(subExpr) {
 					if(hasSideEffects(subExpr)) {
-						isPure = false;
+						foundSideEffect = true;
 					}
 				});
-				return isPure;
+				return foundSideEffect;
 			}
 			case _: {
 				return false;
@@ -257,6 +257,13 @@ private class OptimizerTexpr {
 			case TMeta(meta, _) if(PurityState.getPurityFromMeta(meta) == Pure): {
 				return blockElement(acc, tail);
 			}
+			case TMeta(_, _): {
+				// Unknown metadata may be a target-owned semantic envelope. This
+				// optimizer cannot prove that unwrapping it is safe, so preserve the
+				// complete expression unless `@:pure(true)` explicitly authorizes
+				// removal above.
+				return blockElement([head].concat(acc), tail);
+			}
 			case TIf({ expr: TConst(TBool(t)) }, e1, e2): {
 				if(t) {
 					return blockElement(acc, [e1].concat(tail));
@@ -275,7 +282,7 @@ private class OptimizerTexpr {
 					return blockElement([head].concat(acc), tail);
 				}
 			}
-			case TParenthesis(e1), TMeta(_, e1), TCast(e1, null), TField(e1, _), TUnop(_, _, e1), TEnumIndex(e1), TEnumParameter(e1, _, _): {
+			case TParenthesis(e1), TCast(e1, null), TField(e1, _), TUnop(_, _, e1), TEnumIndex(e1), TEnumParameter(e1, _, _): {
 				return blockElement(acc, [e1].concat(tail));
 			}
 			case TArray(e1, e2), TBinop(_, e1, e2): {
@@ -310,7 +317,10 @@ private class OptimizerTexpr {
 				return blockElement(acc, r.concat(tail));
 			}
 			case TContinue: {
-				return blockElement([], tail);
+				// The accumulator contains expressions that execute before this
+				// continue. Keep those expressions and the control transfer, then
+				// discard only the unreachable tail.
+				return [head].concat(acc);
 			}
 			case _: {
 				return blockElement([head].concat(acc), tail);
