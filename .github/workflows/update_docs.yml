@@ -1,13 +1,13 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Deliberate workflow for deploying this fork's static documentation.
+name: Reflaxe / Deploy fork documentation
 
 on:
-  # Runs on pushes targeting the default branch
-  push:
-    branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type deploy-fork-pages after enabling Pages for this repository
+        required: true
+        type: string
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -24,6 +24,7 @@ concurrency:
 jobs:
   # Single deploy job since we're just deploying
   deploy:
+    if: ${{ inputs.confirmation == 'deploy-fork-pages' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
