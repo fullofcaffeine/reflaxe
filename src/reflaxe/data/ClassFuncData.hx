@@ -7,6 +7,7 @@ import haxe.macro.Expr;
 import haxe.macro.Type;
 
 import reflaxe.preprocessors.ExpressionPreprocessor;
+import reflaxe.lifecycle.FunctionBodyRevision;
 
 using reflaxe.helpers.ClassFieldHelper;
 using reflaxe.helpers.NameMetaHelper;
@@ -31,6 +32,10 @@ class ClassFuncData {
 	public final property: Null<ClassField>;
 
 	public var expr(default, null): Null<TypedExpr>;
+	/** The exact observed body version currently stored in `expr`. **/
+	public var bodyRevision(default, null): FunctionBodyRevision;
+	/** The immutable target-selected program revision containing this function. **/
+	public var programRevision(default, null): Null<String>;
 
 	var variableUsageCount: Null<Map<Int, Int>>; // Access using `getOrFindVariableUsageCount`
 
@@ -53,6 +58,7 @@ class ClassFuncData {
 		this.args = args;
 		this.tfunc = tfunc;
 		this.expr = expr;
+		this.bodyRevision = FunctionBodyRevision.initial(expr);
 
 		if(extractArgumentMetadata) {
 			extractArgumentMeta();
@@ -67,7 +73,22 @@ class ClassFuncData {
 		affecting the original `ClassFuncData`.
 	**/
 	public function clone(): ClassFuncData {
-		return new ClassFuncData(id, classType, field, isStatic, kind, ret, args, tfunc, expr, false, property);
+		final result = new ClassFuncData(id, classType, field, isStatic, kind, ret, args, tfunc, expr, false, property);
+		if(programRevision != null) {
+			result.bindProgramRevision(programRevision);
+		}
+		return result;
+	}
+
+	/** Binds this request-local function data to its containing program revision. **/
+	public function bindProgramRevision(revision: Null<String>): Void {
+		if(revision == null) {
+			return;
+		}
+		if(programRevision != null && programRevision != revision) {
+			throw 'Function "$id" cannot move from program revision "$programRevision" to "$revision".';
+		}
+		programRevision = revision;
 	}
 
 	/**
@@ -165,9 +186,22 @@ class ClassFuncData {
 	**/
 	public function setExpr(e: TypedExpr) {
 		expr = e;
+		bodyRevision = bodyRevision.next(e);
 
 		// The expression changed, so the stored usage count data is now invalid.
 		variableUsageCount = null;
+	}
+
+	/**
+		Detects an in-place body mutation made without `setExpr` and advances the
+		revision when necessary. Lifecycle boundaries call this automatically.
+	**/
+	public function synchronizeBodyRevision(): Void {
+		final observed = bodyRevision.observe(expr);
+		if(observed != bodyRevision) {
+			bodyRevision = observed;
+			variableUsageCount = null;
+		}
 	}
 
 	/**

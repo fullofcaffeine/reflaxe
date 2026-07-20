@@ -16,6 +16,10 @@ import reflaxe.output.OutputManager;
 import reflaxe.output.OutputPath;
 import reflaxe.output.StringOrBytes;
 import reflaxe.preprocessors.ExpressionPreprocessor;
+import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.SemanticLifecycle;
+import reflaxe.lifecycle.SemanticLifecycleOptions;
+import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
 
 using StringTools;
 
@@ -69,6 +73,13 @@ class BaseCompilerOptions {
 		function: `ExpressionPreprocessorHelper.defaults`.
 	**/
 	public var expressionPreprocessors: Null<Array<ExpressionPreprocessor>> = null;
+
+	/**
+		Opt-in revision and ownership validation for target semantic artifacts.
+
+		Leave this `null` to retain the traditional Reflaxe preprocessor behavior.
+	**/
+	public var semanticLifecycle: Null<SemanticLifecycleOptions> = null;
 
 	/**
 		How the source code files are outputted.
@@ -406,14 +417,28 @@ abstract class BaseCompiler {
 	// =======================================================
 	public var options(default, null): BaseCompilerOptions = {};
 	public var expressionPreprocessors(default, null): Array<ExpressionPreprocessor> = [];
+	public var programRevision(default, null): Null<ProgramRevision>;
+	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
 
 	public function setOptions(options: BaseCompilerOptions) {
 		this.options = options;
 		this.expressionPreprocessors = (
 			options.expressionPreprocessors ?? ExpressionPreprocessorHelper.defaults()
 		);
+		this.semanticLifecycle = options.semanticLifecycle != null ? new SemanticLifecycle(options.semanticLifecycle) : null;
 
 		setupReservedVarNames();
+	}
+
+	/** Called by `ReflectCompiler` when final target-selected input is sealed. **/
+	public function beginProgramRevision(revision: ProgramRevision): Void {
+		programRevision = revision;
+		semanticLifecycle?.beginProgram();
+	}
+
+	/** Returns deterministic lifecycle evidence without exposing mutable state. **/
+	public function getSemanticLifecycleTrace(): Array<SemanticLifecycleTraceEvent> {
+		return semanticLifecycle != null ? semanticLifecycle.getTrace() : [];
 	}
 
 	// =======================================================

@@ -26,6 +26,9 @@ import reflaxe.data.EnumOptionArg;
 import reflaxe.data.EnumOptionData;
 import reflaxe.input.ClassHierarchyTracker;
 import reflaxe.input.ModuleUsageTracker;
+import reflaxe.lifecycle.ModuleTypeBatchAccumulator;
+import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.SemanticLifecycleError;
 
 using reflaxe.helpers.ArrayHelper;
 using reflaxe.helpers.BaseTypeHelper;
@@ -165,17 +168,17 @@ class ReflectCompiler {
 	// =======================================================
 	// * Private Members
 	// =======================================================
-	static var haxeProvidedModuleTypes: Null<Array<ModuleType>>;
+	static final haxeProvidedModuleTypes = new ModuleTypeBatchAccumulator();
 
 	static function onAfterTyping(moduleTypes: Array<ModuleType>) {
-		haxeProvidedModuleTypes = moduleTypes;
+		haxeProvidedModuleTypes.add(moduleTypes);
 	}
 
 	static function onAfterGenerate() {
-		checkCompilers();
+		checkCompilers(haxeProvidedModuleTypes.take());
 	}
 
-	static function checkCompilers() {
+	static function checkCompilers(moduleTypes: Array<ModuleType>) {
 		if(Compilers.length <= 0) {
 			return;
 		}
@@ -183,7 +186,7 @@ class ReflectCompiler {
 		final validCompilers = findEnabledCompilers();
 		if(validCompilers.length == 1) {
 			if(#if eval !Context.defined("display") #else true #end) {
-				startCompiler(validCompilers[0]);
+				startCompiler(validCompilers[0], moduleTypes);
 			}
 		} else if(validCompilers.length > 1) {
 			tooManyCompilersError(validCompilers);
@@ -230,21 +233,24 @@ class ReflectCompiler {
 		#end
 	}
 
-	static function startCompiler(compiler: BaseCompiler) {
+	static function startCompiler(compiler: BaseCompiler, moduleTypes: Array<ModuleType>) {
 		#if (eval && reflaxe_measure)
 		final start = new reflaxe.debug.MeasurePerformance();
 		#end
 
-		useCompiler(compiler);
+		useCompiler(compiler, moduleTypes);
 
 		#if (eval && reflaxe_measure)
 		start.measure("Reflaxe target compiled in %MILLI% milliseconds");
 		#end
 	}
 
-	static function useCompiler(compiler: BaseCompiler) {
+	static function useCompiler(compiler: BaseCompiler, haxeProvidedModuleTypes: Array<ModuleType>) {
+		// Macro-server requests must never reuse mutable, preprocessed field data.
+		ClassFieldHelper.resetDataCaches();
+
 		// Copy over types provided by Haxe compiler
-		final moduleTypes = compiler.filterTypes(haxeProvidedModuleTypes != null ? haxeProvidedModuleTypes.copy() : []);
+		final moduleTypes = compiler.filterTypes(haxeProvidedModuleTypes.copy());
 
 		// Track Hierarchy
 		if(compiler.options.trackClassHierarchy) {
@@ -253,6 +259,7 @@ class ReflectCompiler {
 
 		// Apply other type filters
 		final moduleTypes = applyModuleFilters(moduleTypes);
+		compiler.beginProgramRevision(ProgramRevision.fromModuleTypes(moduleTypes));
 
 		// Start
 		callInitCallbacks(compiler);
@@ -572,14 +579,27 @@ class ReflectCompiler {
 	}
 
 	static function preprocessFunction(compiler: BaseCompiler, field: ClassField, data: ClassFuncData): ClassFuncData {
+		data.bindProgramRevision(compiler.programRevision?.id);
 		if(data.expr == null) {
 			return data;
 		}
 		if(compiler.options.enforceNullTyping) {
 			NullTypeEnforcer.modifyExpression(data.expr);
 		}
-		for(preprocessor in compiler.expressionPreprocessors) {
-			preprocessor.process(data, compiler);
+		if(compiler.semanticLifecycle != null) {
+			try {
+				compiler.semanticLifecycle.process(data, compiler, compiler.expressionPreprocessors);
+			} catch(error: SemanticLifecycleError) {
+				#if eval
+				Context.error(error.message, field.pos);
+				#else
+				throw error;
+				#end
+			}
+		} else {
+			for(preprocessor in compiler.expressionPreprocessors) {
+				preprocessor.process(data, compiler);
+			}
 		}
 		return data;
 	}
