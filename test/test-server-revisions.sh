@@ -29,8 +29,17 @@ wait_for_server() {
 			sed -n '1,160p' "$SERVER_LOG" >&2
 			return 1
 		fi
-		if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
-			return 0
+		if command -v lsof >/dev/null 2>&1; then
+			if lsof -nP -a -p "$SERVER_PID" -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+				return 0
+			fi
+		elif command -v ss >/dev/null 2>&1; then
+			if ss -H -ltn "sport = :$PORT" | grep -q .; then
+				return 0
+			fi
+		else
+			echo "Waiting for the Haxe compiler server requires lsof or ss." >&2
+			return 1
 		fi
 		sleep 0.1
 	done
