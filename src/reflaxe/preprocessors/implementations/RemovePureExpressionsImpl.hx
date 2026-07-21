@@ -241,7 +241,7 @@ private class OptimizerTexpr {
 		final kept: Array<TypedExpr> = [];
 
 		while(pending.length > 0) {
-			final head = pending.pop();
+			final head = pending.pop().trustMe();
 			switch(head.expr) {
 				case TBinop(OpAssign, { expr: TLocal(v1) }, { expr: TLocal(v2) }) if(v1 == v2):
 				case TBinop(op, _, _) if(op.match(OpAssignOp(_)) || op == OpAssign):
