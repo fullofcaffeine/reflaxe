@@ -31,6 +31,9 @@ jobs:
       - name: Test compiler-server revision isolation
         run: test/test-server-revisions.sh
 
+      - name: Test stable program fingerprints
+        run: test/test-program-revisions.sh
+
   build_latest:
     runs-on: ubuntu-latest
     steps:
@@ -51,3 +54,6 @@ jobs:
 
       - name: Test compiler-server revision isolation
         run: test/test-server-revisions.sh
+
+      - name: Test stable program fingerprints
+        run: test/test-program-revisions.sh

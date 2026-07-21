@@ -27,8 +27,11 @@ using reflaxe.helpers.ClassFieldHelper;
 // This is a tool built into Reflaxe for modifying functions
 // before typing using @:build macros. 
 import reflaxe.input.ClassModifier;
+import reflaxe.lifecycle.FunctionBodyRevision;
 
 class TestCompiler extends reflaxe.DirectToStringCompiler {
+	/** Raw subject-body hash captured before Reflaxe assigns the program revision. **/
+	var programRevisionProbeRawSubjectBody:Null<String>;
 	
 	// This is the initialization macro used to make the compiler work!
 	// It can be a static function in any class, but we place it in
@@ -72,6 +75,18 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override function onCompileStart() {
+		if(Context.defined("reflaxe_program_revision_probe")) {
+			final revision = programRevision;
+			if(revision == null) {
+				Context.fatalError("The program revision was unavailable to the focused regression.", Context.currentPos());
+			}
+			final rawSubjectBody = programRevisionProbeRawSubjectBody;
+			if(rawSubjectBody == null) {
+				Context.fatalError("The retained fingerprint subject was unavailable to the focused regression.", Context.currentPos());
+			}
+			setExtraFile("ProgramRevision.testout", 'program=${revision.id}\nraw-subject-body=$rawSubjectBody\n');
+		}
+
 		// Let's compile the main function manually!
 		//
 		// Other types will be added to the compilation queue due to
@@ -80,6 +95,19 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {
+		if(Context.defined("reflaxe_program_revision_probe")) {
+			for(moduleType in moduleTypes) {
+				switch(moduleType) {
+					case TClassDecl(classRef) if(classRef.get().name == "ProgramRevisionSubject"):
+						final valueField = classRef.get().statics.get().filter(field -> field.name == "value")[0];
+						final expression = valueField.expr();
+						if(expression != null) {
+							programRevisionProbeRawSubjectBody = FunctionBodyRevision.digestExpression(expression);
+						}
+					case _:
+				}
+			}
+		}
 		final lazyType = Context.getType("LazyAddedType");
 		switch(lazyType) {
 			case TInst(classRef, _):
