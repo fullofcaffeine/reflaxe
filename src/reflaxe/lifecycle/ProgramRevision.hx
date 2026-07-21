@@ -28,12 +28,12 @@ class ProgramRevision {
 
 	/** Builds a deterministic revision from the target-selected program. **/
 	public static function fromModuleTypes(moduleTypes:Array<ModuleType>):ProgramRevision {
-		final entries:Array<String> = [];
+		final entries:Array<String> = ["program-revision-schema|2"];
 		var functionCount = 0;
 
 		function addField(owner:String, category:String, field:ClassField):Void {
 			final expression = field.expr();
-			final body = expression != null ? FunctionBodyRevision.digestExpression(expression) : "<bodiless>";
+			final body = expression != null ? NormalizedProgramBodyDigest.digestExpression(expression) : "<bodiless>";
 			entries.push('$owner|$category|${field.name}|${field.type.getCanonicalId()}|$body');
 			switch (field.kind) {
 				case FMethod(_):

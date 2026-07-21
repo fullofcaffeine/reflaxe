@@ -8,6 +8,9 @@
 
 --macro nullSafety("reflaxe")
 
+# Test-only macro that can shift Haxe's process-wide local IDs without changing the user program.
+--macro ProgramRevisionPerturbation.run()
+
 # This will normally be called automatically by the library, but we do it like this for testing.
 --macro reflaxe.ReflectCompiler.Start()
 --macro RemovePureExpressionsTest.run()

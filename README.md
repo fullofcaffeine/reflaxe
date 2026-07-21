@@ -22,6 +22,7 @@ All you need to worry about is programming the conversion from Haxe's typed AST 
 | [Reflaxe Properties](#reflaxe-properties) | How to configure unique properties for your Reflaxe project. |
 | [Compiler Code Sample](/#compiler-code-sample) | How to code the compiler. |
 | [CompilerInit Code Sample](/#compiler-init-code-sample) | How to code the init macro call. |
+| [Program fingerprints](docs/PROGRAM_REVISION_CONTRACT.md) | How Reflaxe prevents stale target work without reacting to unrelated Haxe local numbers. |
 | [extraParams.hxml Sample](/#extraparamshxml-sample) | How to configure your library. |
 | [compile.hxml Sample](/#compilerhxml-sample) | How to use your library on other Haxe projects. |
 | [BaseCompiler Functions](/#basecompiler-functions) | The functions used to configure your compiler's behavior and code output. |

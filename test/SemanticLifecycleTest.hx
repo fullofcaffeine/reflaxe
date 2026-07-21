@@ -10,6 +10,7 @@ import reflaxe.data.ClassFuncData;
 import reflaxe.helpers.ClassFieldHelper;
 import reflaxe.lifecycle.FunctionBodyRevision;
 import reflaxe.lifecycle.ModuleTypeBatchAccumulator;
+import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
 import reflaxe.lifecycle.SemanticArtifactBinding;
 import reflaxe.lifecycle.SemanticArtifactFamily;
@@ -42,6 +43,8 @@ class SemanticLifecycleTest {
 
 	static function execute():Void {
 		assertTypingBatchesAccumulate();
+		assertProgramRevisionNormalizesHostLocalIds();
+		assertProgramRevisionKeepsSemanticChanges();
 		assertFunctionCacheIsRequestScoped();
 		assertLifecycleSchemaFailsClosed();
 		assertPreserveLossNamesTheOwner();
@@ -85,6 +88,74 @@ class SemanticLifecycleTest {
 		final reverseRevision = ProgramRevision.fromModuleTypes([second, first]);
 		if (forwardRevision.id != reverseRevision.id) {
 			Context.fatalError('program revision depended on module callback order: ${forwardRevision.id} != ${reverseRevision.id}', Context.currentPos());
+		}
+		if (ProgramRevision.fromModuleTypes([first]).id == forwardRevision.id) {
+			Context.fatalError("program revision ignored a retained module", Context.currentPos());
+		}
+	}
+
+	static function assertProgramRevisionNormalizesHostLocalIds():Void {
+		final first = Context.typeExpr(macro {
+			var total = 0;
+			var add = function(value:Int) total += value;
+			for (item in [1, 2])
+				add(item);
+			try {
+				throw "revision probe";
+			} catch (error:String) {
+				total += error.length;
+			}
+			total;
+		});
+		Context.typeExpr(macro {
+			var unrelated = 0;
+			unrelated;
+		});
+		final second = Context.typeExpr(macro {
+			var total = 0;
+			var add = function(value:Int) total += value;
+			for (item in [1, 2])
+				add(item);
+			try {
+				throw "revision probe";
+			} catch (error:String) {
+				total += error.length;
+			}
+			total;
+		});
+		final firstRaw = TypedExprTools.toString(first);
+		final secondRaw = TypedExprTools.toString(second);
+		if (firstRaw == secondRaw) {
+			Context.fatalError("local-number regression setup did not perturb Haxe's detailed typed-expression rendering", Context.currentPos());
+		}
+		if (NormalizedProgramBodyDigest.digestExpression(first) != NormalizedProgramBodyDigest.digestExpression(second)) {
+			Context.fatalError("program body digest retained process-wide local-variable numbering", Context.currentPos());
+		}
+	}
+
+	static function assertProgramRevisionKeepsSemanticChanges():Void {
+		final baseline = Context.typeExpr(macro {
+			var value = 1;
+			value + 1;
+		});
+		final changedValue = Context.typeExpr(macro {
+			var value = 1;
+			value + 2;
+		});
+		final changedType = Context.typeExpr(macro {
+			var value:Float = 1;
+			value + 1;
+		});
+		final firstAccess = Context.typeExpr(macro Sys.print("revision probe"));
+		final secondAccess = Context.typeExpr(macro Sys.println("revision probe"));
+		final firstLiteral = Context.typeExpr(macro "[Local fake(10):Int]");
+		final secondLiteral = Context.typeExpr(macro "[Local fake(20):Int]");
+		final baselineDigest = NormalizedProgramBodyDigest.digestExpression(baseline);
+		if (baselineDigest == NormalizedProgramBodyDigest.digestExpression(changedValue)
+			|| baselineDigest == NormalizedProgramBodyDigest.digestExpression(changedType)
+			|| NormalizedProgramBodyDigest.digestExpression(firstAccess) == NormalizedProgramBodyDigest.digestExpression(secondAccess)
+			|| NormalizedProgramBodyDigest.digestExpression(firstLiteral) == NormalizedProgramBodyDigest.digestExpression(secondLiteral)) {
+			Context.fatalError("program body digest erased a behavior, type, or resolved-field change", Context.currentPos());
 		}
 	}
 
