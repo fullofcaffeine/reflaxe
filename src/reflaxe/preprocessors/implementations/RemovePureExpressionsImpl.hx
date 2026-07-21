@@ -230,107 +230,89 @@ private class OptimizerTexpr {
 
 	/**
 		Processes a block's element list, removing pure (side-effect-free)
-		expressions that don't contribute to the program state. The result
-		is built in reverse order and must be reversed by the caller.
+		expressions that don't contribute to the program state. Pending
+		expressions use an explicit work stack so generated functions with very
+		large blocks do not exhaust the Haxe process call stack. The result is
+		built in reverse order and must be reversed by the caller.
 	**/
 	public static function blockElement(acc: Array<TypedExpr>, el: Array<TypedExpr>): Array<TypedExpr> {
-		if(el.length == 0) {
-			return acc;
+		final pending = el.copy();
+		pending.reverse();
+		final kept: Array<TypedExpr> = [];
+
+		while(pending.length > 0) {
+			final head = pending.pop();
+			switch(head.expr) {
+				case TBinop(OpAssign, { expr: TLocal(v1) }, { expr: TLocal(v2) }) if(v1 == v2):
+				case TBinop(op, _, _) if(op.match(OpAssignOp(_)) || op == OpAssign):
+					kept.push(head);
+				case TUnop(op, _, _) if(op == OpIncrement || op == OpDecrement):
+					kept.push(head);
+				case TLocal(_):
+				case TField(_, fa) if(!PurityState.isPureFieldAccess(fa)):
+					kept.push(head);
+				case TFunction(_), TConst(_), TTypeExpr(_):
+				case TMeta(meta, _) if(PurityState.getPurityFromMeta(meta) == Pure):
+				case TMeta(_, _):
+					// Unknown metadata may be a target-owned semantic envelope. This
+					// optimizer cannot prove that unwrapping it is safe, so preserve the
+					// complete expression unless `@:pure(true)` explicitly authorizes
+					// removal above.
+					kept.push(head);
+				case TIf({ expr: TConst(TBool(t)) }, e1, e2):
+					if(t) {
+						pending.push(e1);
+					} else if(e2 != null) {
+						pending.push(e2.trustMe());
+					}
+				case TSwitch(e, cases, edef):
+					final opt = checkConstantSwitch({e: e, cases: cases, edef: edef});
+					if(opt != null) {
+						pending.push(opt.trustMe());
+					} else {
+						kept.push(head);
+					}
+				case TParenthesis(e1), TCast(e1, null), TField(e1, _), TUnop(_, _, e1), TEnumIndex(e1), TEnumParameter(e1, _, _):
+					pending.push(e1);
+				case TArray(e1, e2), TBinop(_, e1, e2):
+					pending.push(e2);
+					pending.push(e1);
+				case TArrayDecl(el1):
+					pushPendingInSourceOrder(pending, el1);
+				case TCall({ expr: TField(_, FEnum(_)) }, el1):
+					pushPendingInSourceOrder(pending, el1);
+				case TObjectDecl(fl):
+					pushPendingInSourceOrder(pending, [for(f in fl) f.expr]);
+				case TIf(e1, e2, null) if(!hasSideEffects(e2)):
+					pending.push(e1);
+				case TIf(e1, e2, e3) if(e3 != null && !hasSideEffects(e2) && !hasSideEffects(e3)):
+					pending.push(e1);
+				case TBlock(el1):
+					pushPendingInSourceOrder(pending, el1);
+				case TContinue:
+					// Keep effects that execute before this control transfer and discard
+					// only the unreachable expressions that follow it.
+					kept.push(head);
+					return reverseOnto(kept, acc);
+				case _:
+					kept.push(head);
+			}
 		}
 
-		final head = el[0];
-		final tail = el.slice(1);
-		switch(head.expr) {
-			case TBinop(OpAssign, { expr: TLocal(v1) }, { expr: TLocal(v2) }) if(v1 == v2): {
-				return blockElement(acc, tail);
-			}
-			case TBinop(op, _, _) if(op.match(OpAssignOp(_)) || op == OpAssign): {
-				return blockElement([head].concat(acc), tail);
-			}
-			case TUnop(op, _, _) if(op == OpIncrement || op == OpDecrement): {
-				return blockElement([head].concat(acc), tail);
-			}
-			case TLocal(_): {
-				return blockElement(acc, tail);
-			}
-			case TField(_, fa) if(!PurityState.isPureFieldAccess(fa)): {
-				return blockElement([head].concat(acc), tail);
-			}
-			case TFunction(_), TConst(_), TTypeExpr(_): {
-				return blockElement(acc, tail);
-			}
-			case TMeta(meta, _) if(PurityState.getPurityFromMeta(meta) == Pure): {
-				return blockElement(acc, tail);
-			}
-			case TMeta(_, _): {
-				// Unknown metadata may be a target-owned semantic envelope. This
-				// optimizer cannot prove that unwrapping it is safe, so preserve the
-				// complete expression unless `@:pure(true)` explicitly authorizes
-				// removal above.
-				return blockElement([head].concat(acc), tail);
-			}
-			case TIf({ expr: TConst(TBool(t)) }, e1, e2): {
-				if(t) {
-					return blockElement(acc, [e1].concat(tail));
-				} else {
-					return switch(e2) {
-						case null: blockElement(acc, tail);
-						case e: blockElement(acc, [e.trustMe()].concat(tail));
-					}
-				}
-			}
-			case TSwitch(e, cases, edef): {
-				final opt = checkConstantSwitch({e: e, cases: cases, edef: edef});
-				if(opt != null) {
-					return blockElement(acc, [opt.trustMe()].concat(tail));
-				} else {
-					return blockElement([head].concat(acc), tail);
-				}
-			}
-			case TParenthesis(e1), TCast(e1, null), TField(e1, _), TUnop(_, _, e1), TEnumIndex(e1), TEnumParameter(e1, _, _): {
-				return blockElement(acc, [e1].concat(tail));
-			}
-			case TArray(e1, e2), TBinop(_, e1, e2): {
-				return blockElement(acc, [e1, e2].concat(tail));
-			}
-			case TArrayDecl(el1): {
-				return blockElement(acc, el1.concat(tail));
-			}
-			case TCall({ expr: TField(_, FEnum(_)) }, el1): {
-				return blockElement(acc, el1.concat(tail));
-			}
-			case TObjectDecl(fl): {
-				final values = [for(f in fl) f.expr];
-				return blockElement(acc, values.concat(tail));
-			}
-			case TIf(e1, e2, null) if(!hasSideEffects(e2)): {
-				return blockElement(acc, [e1].concat(tail));
-			}
-			case TIf(e1, e2, e3) 
-				if(e3 != null && !hasSideEffects(e2) && !hasSideEffects(e3)): {
-				return blockElement(acc, [e1].concat(tail));
-			}
-			case TBlock([e1]): {
-				return blockElement(acc, [e1].concat(tail));
-			}
-			case TBlock([]): {
-				return blockElement(acc, tail);
-			}
-			case TBlock(el1): {
-				final r: Array<TypedExpr> = OptimizerTexpr.blockElement([], el1);
-				r.reverse();
-				return blockElement(acc, r.concat(tail));
-			}
-			case TContinue: {
-				// The accumulator contains expressions that execute before this
-				// continue. Keep those expressions and the control transfer, then
-				// discard only the unreachable tail.
-				return [head].concat(acc);
-			}
-			case _: {
-				return blockElement([head].concat(acc), tail);
-			}
+		return reverseOnto(kept, acc);
+	}
+
+	static function pushPendingInSourceOrder(pending: Array<TypedExpr>, expressions: Array<TypedExpr>): Void {
+		var index = expressions.length;
+		while(index > 0) {
+			index--;
+			pending.push(expressions[index]);
 		}
+	}
+
+	static function reverseOnto(expressions: Array<TypedExpr>, acc: Array<TypedExpr>): Array<TypedExpr> {
+		expressions.reverse();
+		return expressions.concat(acc);
 	}
 
 	static function extractConstantValue(e: TypedExpr): Null<TypedExpr> {

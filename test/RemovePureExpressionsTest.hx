@@ -20,6 +20,7 @@ class RemovePureExpressionsTest {
 		assertContinuePreservesPriorEffects();
 		assertMetadataEnvelopeSurvives();
 		assertPureExpressionIsRemoved();
+		assertLargeBlockIsStackSafe();
 	}
 
 	static function assertNestedAssignmentSurvives():Void {
@@ -163,6 +164,19 @@ class RemovePureExpressionsTest {
 		final processed = RemovePureExpressionsImpl.process([pure]);
 		if (processed.length != 0) {
 			Context.fatalError("pure standalone expression was not removed", position);
+		}
+	}
+
+	static function assertLargeBlockIsStackSafe():Void {
+		final position = Context.currentPos();
+		final pure = Context.typeExpr(macro 1 + 2);
+		final effect = Context.typeExpr(macro Sys.println("retained"));
+		final expressions = [for (_ in 0...50000) pure];
+		expressions.push(effect);
+
+		final processed = RemovePureExpressionsImpl.process(expressions);
+		if (processed.length != 1 || !processed[0].expr.match(TCall(_, _))) {
+			Context.fatalError('large-block cleanup retained ${processed.length} expressions instead of the one side effect', position);
 		}
 	}
 	#end
