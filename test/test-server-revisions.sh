@@ -16,20 +16,35 @@ cleanup() {
 		kill "$SERVER_PID" 2>/dev/null || true
 		wait "$SERVER_PID" 2>/dev/null || true
 	fi
-	rm -rf "$WORK_DIR"
+	if [[ -d "$WORK_DIR" ]]; then
+		find "$WORK_DIR" -depth -delete
+	fi
 }
 trap cleanup EXIT
+
+wait_for_server() {
+	local attempt
+	for ((attempt = 0; attempt < 50; attempt++)); do
+		if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+			sed -n '1,160p' "$SERVER_LOG" >&2
+			return 1
+		fi
+		if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	echo "Haxe compiler server did not become ready on port $PORT within 5 seconds." >&2
+	sed -n '1,160p' "$SERVER_LOG" >&2
+	return 1
+}
 
 cp -R "$REPO_ROOT/src" "$WORK_DIR/src"
 cp -R "$TEST_ROOT" "$WORK_DIR/test"
 
 "$HAXE_BIN" --wait "$PORT" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 0.2
-if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-	cat "$SERVER_LOG"
-	exit 1
-fi
+wait_for_server
 
 run_build() {
 	if ! "$HAXE_BIN" --connect "$PORT" Test.hxml; then
