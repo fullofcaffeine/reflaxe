@@ -28,17 +28,6 @@ enum abstract Define(String) from String to String {
 	var GenerateEverythingExcept = "reflaxe.generate_everything_except";
 
 	/**
-		-D reflaxe.disallow_build_cache_check
-
-		If defined, the module-cache check using build macros that is
-		employed upon subsequent `--connect` runs will not occur.
-
-		This may be necessary for Reflaxe targets that modify global state in a
-		way that requires all types to be recompiled for proper generation.
-	**/
-	var DisallowBuildCacheCheck = "reflaxe.disallow_build_cache_check";
-
-	/**
 		-D reflaxe.dont_output_metadata_id
 
 		If defined, the `id` entry in the output metadata will always be `0`.

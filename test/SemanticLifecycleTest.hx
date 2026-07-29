@@ -8,9 +8,9 @@ import haxe.macro.TypedExprTools;
 import reflaxe.BaseCompiler;
 import reflaxe.data.ClassFuncData;
 import reflaxe.helpers.ClassFieldHelper;
+import reflaxe.lifecycle.CompleteProgramTypeCapture;
 import reflaxe.lifecycle.FunctionBodyRevision;
 import reflaxe.lifecycle.LexicalLocalIdentityPlan;
-import reflaxe.lifecycle.ModuleTypeBatchAccumulator;
 import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
 import reflaxe.lifecycle.SemanticArtifactBinding;
@@ -24,6 +24,7 @@ import reflaxe.preprocessors.BasePreprocessor;
 import reflaxe.preprocessors.ExpressionPreprocessor;
 
 using reflaxe.helpers.ClassFieldHelper;
+using reflaxe.helpers.ModuleTypeHelper;
 #end
 
 /** Focused framework regressions for revisioned semantic preprocessing. **/
@@ -43,7 +44,7 @@ class SemanticLifecycleTest {
 	}
 
 	static function execute():Void {
-		assertTypingBatchesAccumulate();
+		assertCompleteProgramCaptureOwnsTargetInput();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
 		assertLexicalLocalIdentityShapeFailsClosed();
@@ -76,18 +77,35 @@ class SemanticLifecycleTest {
 		}
 	}
 
-	static function assertTypingBatchesAccumulate():Void {
-		final accumulator = new ModuleTypeBatchAccumulator();
+	static function assertCompleteProgramCaptureOwnsTargetInput():Void {
+		final capture = new CompleteProgramTypeCapture();
 		final first = moduleType("MyClass");
 		final second = moduleType("LazyAddedType");
-		accumulator.add([first]);
-		accumulator.add([first, second]);
-		final accumulated = accumulator.take();
-		if (accumulated.length != 2 || accumulated[0] != first || accumulated[1] != second) {
-			Context.fatalError("onAfterTyping batches were not reconciled in first-seen order", Context.currentPos());
+		final firstType = moduleTypeAsType(first);
+		final secondType = moduleTypeAsType(second);
+		final completeTypes = [firstType, secondType];
+
+		capture.replace([firstType]);
+		capture.replace(completeTypes);
+		completeTypes.resize(0);
+		final captured = capture.take();
+		if (captured.length != 2
+			|| captured[0].getUniqueId() != first.getUniqueId()
+			|| captured[1].getUniqueId() != second.getUniqueId()) {
+			Context.fatalError("the complete onGenerate view did not replace a stale partial request defensively", Context.currentPos());
 		}
-		if (accumulator.take().length != 0) {
-			Context.fatalError("module-type accumulator retained objects across requests", Context.currentPos());
+		final missing = expectLifecycleError(() -> capture.take());
+		if (missing.code != "reflaxe:missing-complete-program") {
+			Context.fatalError("a consumed complete-program capture did not fail closed", Context.currentPos());
+		}
+		final duplicate = expectLifecycleError(() -> capture.replace([firstType, firstType]));
+		if (duplicate.code != "reflaxe:duplicate-complete-program-type") {
+			Context.fatalError("a duplicate complete-program declaration did not fail closed", Context.currentPos());
+		}
+		final functionType = Context.typeof(macro function(value:Int):Int return value);
+		final malformed = expectLifecycleError(() -> capture.replace([functionType]));
+		if (malformed.code != "reflaxe:malformed-complete-program-type") {
+			Context.fatalError("a non-declaration complete-program value did not fail closed", Context.currentPos());
 		}
 		final forwardRevision = ProgramRevision.fromModuleTypes([first, second]);
 		final reverseRevision = ProgramRevision.fromModuleTypes([second, first]);
@@ -426,6 +444,15 @@ class SemanticLifecycleTest {
 		return switch (Context.getType(name)) {
 			case TInst(reference, _): TClassDecl(reference);
 			case _: Context.fatalError('$name did not resolve to a class', Context.currentPos());
+		}
+	}
+
+	static function moduleTypeAsType(moduleType:ModuleType):haxe.macro.Type {
+		return switch (moduleType) {
+			case TClassDecl(reference): TInst(reference, []);
+			case TEnumDecl(reference): TEnum(reference, []);
+			case TTypeDecl(reference): TType(reference, []);
+			case TAbstract(reference): TAbstract(reference, []);
 		}
 	}
 

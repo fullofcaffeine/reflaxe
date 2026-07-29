@@ -89,8 +89,12 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			if(rawSubjectBody == null || stableSubjectBody == null) {
 				Context.fatalError("The retained fingerprint subject was unavailable to the focused regression.", Context.currentPos());
 			}
+			final rawProbe = Context.defined("reflaxe_program_raw_revision_probe")
+				? 'raw-subject-body=$rawSubjectBody\n'
+				: "";
 			setExtraFile("ProgramRevision.testout",
-				'program=${revision.id}\nstable-subject-body=$stableSubjectBody\nraw-subject-body=$rawSubjectBody\n');
+				'program=${revision.id}\nmodules=${revision.moduleCount}\nfunctions=${revision.functionCount}\n'
+				+ 'stable-subject-body=$stableSubjectBody\n$rawProbe');
 		}
 
 		// Let's compile the main function manually!

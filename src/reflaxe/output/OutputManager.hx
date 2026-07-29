@@ -31,7 +31,10 @@ typedef OutputMetadata = {
 	id: Int,
 
 	/**
-		If `true`, the most recent compilation was performed with cached modules.
+		Legacy metadata field retained for schema compatibility.
+
+		Reflaxe now receives and regenerates one complete target program for every
+		request, so newly written metadata always records `false`.
 	**/
 	wasCached: Bool,
 
@@ -322,15 +325,11 @@ class OutputManager {
 		if(outputDir == null) return;
 		final dir = StringTools.endsWith(outputDir, "/") ? outputDir : (outputDir + "/");
 		final outputFilePath = StringTools.replace(path, dir, "");
-		outputFiles.push(outputFilePath);
+		if(!outputFiles.contains(outputFilePath)) {
+			outputFiles.push(outputFilePath);
+		}
 
 		if(outputMetadata != null) {
-			#if !reflaxe.disallow_build_cache_check
-			if(ReflectCompiler.isCachedRebuild) {
-				// Don't modify `filesGenerated` if we are cache rebuilding.
-			} else
-			#end
-
 			// -------------------------------------------------------
 			// We overwrote this file if it existed, so we can
 			// remove it from old files we're planning to delete.
@@ -347,12 +346,6 @@ class OutputManager {
 		want to delete.
 	**/
 	function deleteOldOutputFiles() {
-		#if !reflaxe.disallow_build_cache_check
-		if(ReflectCompiler.isCachedRebuild) {
-			return;
-		}
-		#end
-
 		if(outputMetadata != null && outputDir != null) {
 			for(file in outputMetadata.filesGenerated) {
 				final filePath = joinPaths(outputDir, file);
@@ -378,30 +371,14 @@ class OutputManager {
 			return;
 		}
 
+		final generatedFiles = outputFiles.copy();
+		generatedFiles.sort(Reflect.compare);
 		final outputMetadata: OutputMetadata = {
 			version: 1,
 			id: #if !reflaxe.dont_output_metadata_id lastId + 1 #else 0 #end,
-			wasCached: #if !reflaxe.disallow_build_cache_check ReflectCompiler.isCachedRebuild #else false #end,
-			filesGenerated: [],
+			wasCached: false,
+			filesGenerated: generatedFiles,
 		};
-
-		// -------------------------------------------------------
-		// If this is a cache build, we cannot delete old files.
-		// Instead add this to the list of files generated if it
-		// doesn't exist.
-		#if !reflaxe.disallow_build_cache_check
-		if(ReflectCompiler.isCachedRebuild) {
-			for(outputFile in outputFiles) {
-				if(!outputMetadata.filesGenerated.contains(outputFile)) {
-					outputMetadata.filesGenerated.push(outputFile);
-				}
-			}
-			Sys.println("Only recompiled " + outputFiles.length + " file" + (outputFiles.length != 1 ? "s" : "") + ".");
-		} else
-		#end
-		{
-			outputMetadata.filesGenerated = outputFiles;
-		}
 
 		sys.io.File.saveContent(generatedFilesPath(), haxe.Json.stringify(outputMetadata, "\t"));
 	}
