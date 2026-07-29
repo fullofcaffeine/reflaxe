@@ -54,6 +54,9 @@ perturbed_program="$(field_value perturbed program)"
 changed_program="$(field_value changed program)"
 baseline_raw="$(field_value baseline raw-subject-body)"
 perturbed_raw="$(field_value perturbed raw-subject-body)"
+baseline_stable_body="$(field_value baseline stable-subject-body)"
+perturbed_stable_body="$(field_value perturbed stable-subject-body)"
+changed_stable_body="$(field_value changed stable-subject-body)"
 
 if [[ -z "$baseline_program" || -z "$perturbed_program" || -z "$changed_program" ]]; then
 	echo "program-revision probe did not emit every required fingerprint" >&2
@@ -65,6 +68,14 @@ if [[ "$baseline_raw" == "$perturbed_raw" ]]; then
 fi
 if [[ "$baseline_program" != "$perturbed_program" ]]; then
 	echo "unrelated macro-local numbering changed the normalized program fingerprint" >&2
+	exit 1
+fi
+if [[ "$baseline_stable_body" != "$perturbed_stable_body" ]]; then
+	echo "unrelated macro-local numbering changed the normalized function-body fingerprint" >&2
+	exit 1
+fi
+if [[ "$baseline_stable_body" == "$changed_stable_body" ]]; then
+	echo "a real Haxe body change did not change the normalized function-body fingerprint" >&2
 	exit 1
 fi
 if [[ "$baseline_program" == "$changed_program" ]]; then
