@@ -37,6 +37,7 @@ class DirectoryOutputTransaction {
 	public static inline final TEST_AFTER_PUBLIC_MOVE = "after-public-move";
 	public static inline final TEST_AFTER_CANDIDATE_PUBLISH = "after-candidate-publish";
 	public static inline final TEST_BEFORE_CLEANUP = "before-cleanup";
+	public static inline final TEST_AFTER_BACKUP_CLEANUP = "after-backup-cleanup";
 	#end
 
 	public final publicDirectory:String;
@@ -123,11 +124,6 @@ class DirectoryOutputTransaction {
 			writeMarker(STATE_CANDIDATE_PUBLISHED);
 			testCheckpoint(#if reflaxe_lifecycle_test TEST_AFTER_CANDIDATE_PUBLISH #else "" #end);
 			testCheckpoint(#if reflaxe_lifecycle_test TEST_BEFORE_CLEANUP #else "" #end);
-
-			if (publicMoved && FileSystem.exists(backupDirectory))
-				deleteTree(backupDirectory);
-			deleteTree(transactionRoot);
-			active = false;
 		} catch (cause:Dynamic) {
 			final rollbackFailure = rollback(publicMoved, candidatePublished);
 			if (rollbackFailure != null) {
@@ -138,6 +134,8 @@ class DirectoryOutputTransaction {
 			throw error("reflaxe:output-transaction-publication-failed",
 				'Publishing "$publicDirectory" failed and the prior output was restored: ${Std.string(cause)}');
 		}
+		active = false;
+		cleanupPublishedState(publicMoved);
 	}
 
 	/**
@@ -174,6 +172,28 @@ class DirectoryOutputTransaction {
 			return null;
 		} catch (rollbackCause:Dynamic) {
 			return Std.string(rollbackCause);
+		}
+	}
+
+	/**
+		Best-effort cleanup after the new public tree reaches its commit point.
+
+		Once the candidate is public and the marker records that fact, deleting
+		the old backup is irreversible. A later cleanup error must therefore
+		leave the new tree committed instead of entering a rollback path that can
+		no longer restore the old tree. Any surviving marker remains in the
+		`candidate-published` state so the next request can finish cleanup.
+	**/
+	function cleanupPublishedState(publicMoved:Bool):Void {
+		try {
+			if (publicMoved && FileSystem.exists(backupDirectory))
+				deleteTree(backupDirectory);
+			testCheckpoint(#if reflaxe_lifecycle_test TEST_AFTER_BACKUP_CLEANUP #else "" #end);
+			if (FileSystem.exists(transactionRoot))
+				deleteTree(transactionRoot);
+		} catch (_) {
+			// Publication already committed. Recovery owns any private state
+			// that could not be removed during this request.
 		}
 	}
 

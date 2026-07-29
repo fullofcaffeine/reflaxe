@@ -58,6 +58,7 @@ class SemanticLifecycleTest {
 		assertProgramRevisionKeepsSemanticChanges();
 		assertFunctionCacheIsRequestScoped();
 		assertLifecycleSchemaFailsClosed();
+		assertOutputMetadataRejectsUnsafePaths();
 		assertPreserveLossNamesTheOwner();
 		assertInvalidationRequiresRebuild();
 		assertInvalidationThenRebuildSucceeds();
@@ -221,6 +222,22 @@ class SemanticLifecycleTest {
 			finishPublishedCandidate.abort();
 			assertNoOutputTransactionState(tempRoot);
 
+			final cleanupInterrupted = new DirectoryOutputTransaction(publicDirectory);
+			final cleanupCandidate = cleanupInterrupted.begin();
+			File.saveContent(Path.join([cleanupCandidate, "Main.generated"]), "C-main");
+			cleanupInterrupted.failAtForTest(DirectoryOutputTransaction.TEST_AFTER_BACKUP_CLEANUP);
+			cleanupInterrupted.commit();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "C-main") {
+				Context.fatalError("cleanup after the publication commit point rolled back the new public tree", Context.currentPos());
+			}
+			final finishCleanup = new DirectoryOutputTransaction(publicDirectory);
+			finishCleanup.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "C-main") {
+				Context.fatalError("recovery after committed cleanup replaced the new public tree", Context.currentPos());
+			}
+			finishCleanup.abort();
+			assertNoOutputTransactionState(tempRoot);
+
 			ensureTestDirectory(transactionRoot);
 			File.saveContent(Path.join([transactionRoot, DirectoryOutputTransaction.MARKER_FILENAME]), "{}");
 			var malformedFailed = false;
@@ -240,6 +257,27 @@ class SemanticLifecycleTest {
 			deleteTestTree(tempRoot);
 		if (failure != null)
 			throw failure;
+	}
+
+	/** Proves persisted file receipts cannot escape their owned output tree. **/
+	static function assertOutputMetadataRejectsUnsafePaths():Void {
+		for (unsafePath in ["../outside.generated", "/outside.generated"]) {
+			final content = haxe.Json.stringify({
+				version: 1,
+				id: 1,
+				wasCached: false,
+				filesGenerated: [unsafePath]
+			});
+			var failed = false;
+			try {
+				reflaxe.output.OutputMetadataCodec.decode(content, "unsafe-receipt.json");
+			} catch (_) {
+				failed = true;
+			}
+			if (!failed) {
+				Context.fatalError('output metadata accepted unsafe generated path "$unsafePath"', Context.currentPos());
+			}
+		}
 	}
 
 	static function writeTestTransactionMarker(transactionRoot:String, publicDirectory:String, state:String):Void {

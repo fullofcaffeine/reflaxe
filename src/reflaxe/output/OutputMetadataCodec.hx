@@ -3,6 +3,7 @@ package reflaxe.output;
 #if (macro || reflaxe_runtime)
 import haxe.DynamicAccess;
 import haxe.Json;
+import haxe.io.Path;
 import reflaxe.output.OutputManager.OutputMetadata;
 
 /**
@@ -36,7 +37,7 @@ class OutputMetadataCodec {
 			if (!Std.isOfType(value, String)) {
 				throw malformed(source, "filesGenerated contains a non-string path");
 			}
-			filesGenerated.push(cast value);
+			filesGenerated.push(checkedRelativePath(cast value, source));
 		}
 		return {
 			version: cast version,
@@ -48,6 +49,21 @@ class OutputMetadataCodec {
 
 	public static function encode(metadata:OutputMetadata):String {
 		return Json.stringify(metadata, "\t");
+	}
+
+	static function checkedRelativePath(path:String, source:String):String {
+		if (path.length == 0 || Path.isAbsolute(path)) {
+			throw malformed(source, 'filesGenerated contains a non-relative path "$path"');
+		}
+		final normalized = Path.normalize(path);
+		if (normalized.length == 0
+			|| normalized == "."
+			|| normalized == ".."
+			|| StringTools.startsWith(normalized, "../")
+			|| StringTools.startsWith(normalized, "..\\")) {
+			throw malformed(source, 'filesGenerated contains an escaping path "$path"');
+		}
+		return normalized;
 	}
 
 	static function malformed(source:String, detail:String):haxe.Exception {
