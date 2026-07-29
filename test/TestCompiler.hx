@@ -61,6 +61,7 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			fileOutputExtension: ".testout",
 			outputDirDefineName: "testoutput",
 			fileOutputType: FilePerModule,
+			transactionalFileOutput: true,
 			ignoreTypes: [],
 			targetCodeInjectionName: "__testscript__",
 			ignoreBodilessFunctions: true,
@@ -102,6 +103,36 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		// Other types will be added to the compilation queue due to
 		// `addModuleTypeForCompilation` calls made while compiling the main expression.
 		setExtraFile("Main.testout", "func main():\n" + compileExpression(getMainExpr()).tab());
+	}
+
+	/**
+		Injects late output faults into the private candidate.
+
+		The server regression uses these branches to prove that `ReflectCompiler`
+		rejects malformed or unsafe candidates, aborts their private directory,
+		and leaves the prior complete public tree intact.
+	**/
+	override function onOutputComplete() {
+		if(Context.defined("reflaxe_output_transaction_fail_on_complete")) {
+			output.saveFile("FailureProbe.testout", "candidate-only");
+			throw "injected Reflaxe target completion failure";
+		}
+		if(Context.defined("reflaxe_output_transaction_malformed_receipt")) {
+			final candidateDirectory = output.outputDir;
+			if(candidateDirectory == null) {
+				throw "transaction receipt fault requires a candidate directory";
+			}
+			sys.io.File.saveContent(
+				haxe.io.Path.join([candidateDirectory, output.GENERATED_LIST_FILENAME]),
+				"{malformed"
+			);
+		}
+		if(Context.defined("reflaxe_output_transaction_escape")) {
+			output.saveFile("../EscapedFailureProbe.testout", "must-not-escape");
+		}
+		if(Context.defined("reflaxe_output_transaction_absolute")) {
+			output.saveFile(haxe.io.Path.join([Sys.getCwd(), "AbsoluteFailureProbe.testout"]), "must-not-write-absolute");
+		}
 	}
 
 	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {

@@ -1,5 +1,0 @@
-version // 1
-0//0
-haxe_Log.testout
-MyClass.testout
-Main.testout

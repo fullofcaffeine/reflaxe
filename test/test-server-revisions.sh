@@ -74,6 +74,35 @@ run_server_build() {
 	)
 }
 
+run_server_build_expect_failure() {
+	local define="$1"
+	if (
+		cd "$WORK_DIR/server/test"
+		"$HAXE_BIN" --connect "$PORT" Test.hxml "${COMMON_ARGS[@]}" -D "$define"
+	); then
+		echo "the injected output transaction failure unexpectedly succeeded" >&2
+		return 1
+	fi
+}
+
+run_server_build_with_metadata_id() {
+	(
+		cd "$WORK_DIR/server/test"
+		"$HAXE_BIN" --connect "$PORT" Test.hxml -D reflaxe_program_revision_probe
+	)
+}
+
+metadata_id() {
+	node - "$WORK_DIR/server/test/testlang/_GeneratedFiles.json" <<'NODE'
+const fs = require('fs')
+const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+if (!Number.isInteger(receipt.id)) {
+	throw new Error('generated-file receipt id is not an integer')
+}
+process.stdout.write(String(receipt.id))
+NODE
+}
+
 assert_trees_equal() {
 	local label="$1"
 	local expected="$2"
@@ -123,6 +152,30 @@ grep -F '"wasCached": false' "$WORK_DIR/server-baseline/_GeneratedFiles.json" >/
 run_server_build
 assert_trees_equal "unchanged warm server versus cold server" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
 
+run_server_build_expect_failure reflaxe_output_transaction_fail_on_complete
+assert_trees_equal "failed target completion versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+if find "$WORK_DIR/server/test" -maxdepth 1 -name '.*.reflaxe-output-transaction' -print -quit | grep -q .; then
+	echo "failed target completion left private transaction state" >&2
+	exit 1
+fi
+
+run_server_build_expect_failure reflaxe_output_transaction_malformed_receipt
+assert_trees_equal "malformed candidate receipt versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+
+run_server_build_expect_failure reflaxe_output_transaction_escape
+assert_trees_equal "escaping output rejection versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+if [[ -e "$WORK_DIR/server/test/EscapedFailureProbe.testout" ]]; then
+	echo "transactional output escaped its owned directory" >&2
+	exit 1
+fi
+
+run_server_build_expect_failure reflaxe_output_transaction_absolute
+assert_trees_equal "absolute output rejection versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+if [[ -e "$WORK_DIR/server/test/AbsoluteFailureProbe.testout" ]]; then
+	echo "transactional output wrote an absolute path" >&2
+	exit 1
+fi
+
 edit_subject "$WORK_DIR/server/test"
 edit_subject "$WORK_DIR/clean/test"
 run_server_build
@@ -153,5 +206,14 @@ cp "$SCRIPT_ROOT/ProgramRevisionSubject.hx" "$WORK_DIR/server/test/ProgramRevisi
 touch -t 202001010103.03 "$WORK_DIR/server/test/ProgramRevisionSubject.hx"
 run_server_build
 assert_trees_equal "restored A-to-B-to-A server request" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+
+run_server_build_with_metadata_id
+FIRST_METADATA_ID="$(metadata_id)"
+run_server_build_with_metadata_id
+SECOND_METADATA_ID="$(metadata_id)"
+if [[ "$SECOND_METADATA_ID" -ne "$((FIRST_METADATA_ID + 1))" ]]; then
+	echo "warm output transactions did not reload and increment the committed generated-file receipt" >&2
+	exit 1
+fi
 
 echo "COMPLETE_PROGRAM_SERVER_CONTRACT:PASS"

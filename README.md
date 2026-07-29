@@ -360,6 +360,21 @@ public var trackClassHierarchy: Bool = true;
 public var deleteOldOutput: Bool = true;
 
 /**
+	If `true`, Reflaxe writes one complete candidate directory privately and
+	publishes it only after `onOutputComplete` succeeds.
+
+	Use this for `FilePerModule` or `FilePerClass` compilers that own their whole
+	output directory. If a target fails after writing some candidate files, the
+	last successful public directory remains unchanged. A successful request
+	replaces the directory, so unknown files are not preserved automatically.
+
+	During generation, `output.outputDir` is the private candidate path. Use
+	`output.publicOutputDir` when a diagnostic or configuration identity needs
+	the stable path requested by the user.
+**/
+public var transactionalFileOutput: Bool = false;
+
+/**
 	If `false`, an error is thrown if a function without
 	a body is encountered. Typically this occurs when
 	an umimplemented Haxe API function is encountered.
@@ -432,4 +447,3 @@ public var metadataTemplates: Array<{
 ```
 
 ![cooltext494864605071465](https://github.com/user-attachments/assets/9d61f81f-f2f2-4dc2-8317-63a836297eb1)
-

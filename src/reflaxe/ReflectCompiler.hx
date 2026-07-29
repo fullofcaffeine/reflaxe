@@ -242,9 +242,23 @@ class ReflectCompiler {
 			dynamicallyAddModulesToCompiler(compiler);
 		}
 
-		// Generate files
-		generateFiles(compiler);
-		compiler.onOutputComplete();
+		// Generate and validate one private candidate before publishing it.
+		compiler.beginOutputTransaction();
+		try {
+			generateFiles(compiler);
+			compiler.onOutputComplete();
+			#if reflaxe_output_transaction_test_fail_before_commit
+			throw "injected Reflaxe output transaction failure before publication";
+			#end
+			compiler.commitOutputTransaction();
+		} catch(cause: Dynamic) {
+			try {
+				compiler.abortOutputTransaction();
+			} catch(abortCause: Dynamic) {
+				throw new haxe.Exception('Reflaxe output failed (${Std.string(cause)}), and its private candidate could not be aborted: ${Std.string(abortCause)}');
+			}
+			throw cause;
+		}
 	}
 
 	/** Filters types based on user-selected generation defines. **/

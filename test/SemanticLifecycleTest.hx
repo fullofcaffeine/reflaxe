@@ -5,6 +5,7 @@ import haxe.macro.Type.ClassType;
 import haxe.macro.Type.ModuleType;
 import haxe.macro.Type.TypedExpr;
 import haxe.macro.TypedExprTools;
+import haxe.io.Path;
 import reflaxe.BaseCompiler;
 import reflaxe.data.ClassFuncData;
 import reflaxe.helpers.ClassFieldHelper;
@@ -20,8 +21,11 @@ import reflaxe.lifecycle.SemanticArtifactSnapshot;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleError;
 import reflaxe.lifecycle.SemanticPreprocessorAction;
+import reflaxe.output.DirectoryOutputTransaction;
 import reflaxe.preprocessors.BasePreprocessor;
 import reflaxe.preprocessors.ExpressionPreprocessor;
+import sys.FileSystem;
+import sys.io.File;
 
 using reflaxe.helpers.ClassFieldHelper;
 using reflaxe.helpers.ModuleTypeHelper;
@@ -45,6 +49,7 @@ class SemanticLifecycleTest {
 
 	static function execute():Void {
 		assertCompleteProgramCaptureOwnsTargetInput();
+		assertDirectoryOutputTransactionRollsBack();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
 		assertLexicalLocalIdentityShapeFailsClosed();
@@ -61,6 +66,216 @@ class SemanticLifecycleTest {
 		assertExactBodyRevisionDetectsInPlaceMutation();
 		assertTraceIsOutputInert();
 		ClassFieldHelper.resetDataCaches();
+	}
+
+	/**
+		Proves that every handled publication checkpoint restores the old tree.
+
+		The filesystem fixture is intentionally target-neutral: it models two
+		complete generated directories without assuming anything about the
+		language a Reflaxe compiler emits.
+	**/
+	static function assertDirectoryOutputTransactionRollsBack():Void {
+		final tempRoot = Path.join([
+			Sys.getEnv("TMPDIR") ?? "/tmp",
+			'reflaxe-output-transaction-test-${Std.random(0x3fffffff)}'
+		]);
+		final publicDirectory = Path.join([tempRoot, "out"]);
+		var failure:Dynamic = null;
+		try {
+			ensureTestDirectory(publicDirectory);
+			File.saveContent(Path.join([publicDirectory, "Main.generated"]), "A-main");
+			File.saveContent(Path.join([publicDirectory, "OnlyA.generated"]), "A-only");
+
+			final failureStages = [
+				DirectoryOutputTransaction.TEST_BEFORE_PUBLIC_MOVE,
+				DirectoryOutputTransaction.TEST_AFTER_PUBLIC_MOVE,
+				DirectoryOutputTransaction.TEST_AFTER_CANDIDATE_PUBLISH,
+				DirectoryOutputTransaction.TEST_BEFORE_CLEANUP
+			];
+			for (stage in failureStages) {
+				final transaction = new DirectoryOutputTransaction(publicDirectory);
+				final candidate = transaction.begin();
+				File.saveContent(Path.join([candidate, "Main.generated"]), 'B-main-$stage');
+				File.saveContent(Path.join([candidate, "OnlyB.generated"]), "B-only");
+				transaction.failAtForTest(stage);
+				var failed = false;
+				try {
+					transaction.commit();
+				} catch (_) {
+					failed = true;
+				}
+				if (!failed
+					|| File.getContent(Path.join([publicDirectory, "Main.generated"])) != "A-main"
+					|| File.getContent(Path.join([publicDirectory, "OnlyA.generated"])) != "A-only"
+					|| FileSystem.exists(Path.join([publicDirectory, "OnlyB.generated"]))) {
+					Context.fatalError('output transaction checkpoint "$stage" did not restore the complete A tree', Context.currentPos());
+				}
+				assertNoOutputTransactionState(tempRoot);
+			}
+
+			final aborted = new DirectoryOutputTransaction(publicDirectory);
+			final abortedCandidate = aborted.begin();
+			File.saveContent(Path.join([abortedCandidate, "Main.generated"]), "aborted");
+			aborted.abort();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "A-main")
+				Context.fatalError("aborting a private output candidate changed the public tree", Context.currentPos());
+			assertNoOutputTransactionState(tempRoot);
+
+			final successful = new DirectoryOutputTransaction(publicDirectory);
+			final successfulCandidate = successful.begin();
+			File.saveContent(Path.join([successfulCandidate, "Main.generated"]), "B-main");
+			File.saveContent(Path.join([successfulCandidate, "OnlyB.generated"]), "B-only");
+			successful.commit();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main"
+				|| File.getContent(Path.join([publicDirectory, "OnlyB.generated"])) != "B-only"
+				|| FileSystem.exists(Path.join([publicDirectory, "OnlyA.generated"]))) {
+				Context.fatalError("a successful output transaction did not publish only the complete B tree", Context.currentPos());
+			}
+			assertNoOutputTransactionState(tempRoot);
+
+			final emptyPublicDirectory = Path.join([tempRoot, "empty-output"]);
+			final emptyAbort = new DirectoryOutputTransaction(emptyPublicDirectory);
+			final emptyCandidate = emptyAbort.begin();
+			File.saveContent(Path.join([emptyCandidate, "Partial.generated"]), "partial");
+			emptyAbort.abort();
+			if (FileSystem.exists(emptyPublicDirectory)) {
+				Context.fatalError("aborting a first-build candidate published an output directory", Context.currentPos());
+			}
+			assertNoOutputTransactionState(tempRoot);
+
+			final transactionRoot = Path.join([tempRoot, ".out.reflaxe-output-transaction"]);
+			final candidateDirectory = Path.join([transactionRoot, "candidate", "out"]);
+			final backupDirectory = Path.join([transactionRoot, "backup", "out"]);
+
+			ensureTestDirectory(candidateDirectory);
+			File.saveContent(Path.join([candidateDirectory, "Main.generated"]), "interrupted-generation");
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_PREPARING);
+			final recoverInterruptedGeneration = new DirectoryOutputTransaction(publicDirectory);
+			recoverInterruptedGeneration.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted private generation changed the public tree", Context.currentPos());
+			}
+			recoverInterruptedGeneration.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(candidateDirectory);
+			File.saveContent(Path.join([candidateDirectory, "Main.generated"]), "unpublished-candidate");
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_PUBLIC_MOVE_PENDING);
+			final recoverBeforePublicMove = new DirectoryOutputTransaction(publicDirectory);
+			recoverBeforePublicMove.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted output recovery changed the public tree before its move", Context.currentPos());
+			}
+			recoverBeforePublicMove.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(candidateDirectory);
+			File.saveContent(Path.join([candidateDirectory, "Main.generated"]), "unpublished-candidate");
+			ensureTestDirectory(Path.directory(backupDirectory));
+			FileSystem.rename(publicDirectory, backupDirectory);
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_PUBLIC_MOVE_PENDING);
+			final recoverPendingPublicMove = new DirectoryOutputTransaction(publicDirectory);
+			recoverPendingPublicMove.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted output recovery did not restore a pending public move", Context.currentPos());
+			}
+			recoverPendingPublicMove.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(candidateDirectory);
+			File.saveContent(Path.join([candidateDirectory, "Main.generated"]), "unpublished-candidate");
+			ensureTestDirectory(Path.directory(backupDirectory));
+			FileSystem.rename(publicDirectory, backupDirectory);
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_PUBLIC_MOVED);
+			final restoreMovedPublic = new DirectoryOutputTransaction(publicDirectory);
+			restoreMovedPublic.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted output recovery did not restore the moved public tree", Context.currentPos());
+			}
+			restoreMovedPublic.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(candidateDirectory);
+			File.saveContent(Path.join([candidateDirectory, "Main.generated"]), "interrupted-candidate");
+			ensureTestDirectory(Path.directory(backupDirectory));
+			FileSystem.rename(publicDirectory, backupDirectory);
+			FileSystem.rename(candidateDirectory, publicDirectory);
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_PUBLIC_MOVED);
+			final rollbackUnmarkedCandidate = new DirectoryOutputTransaction(publicDirectory);
+			rollbackUnmarkedCandidate.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted output recovery did not roll back an unmarked candidate publication", Context.currentPos());
+			}
+			rollbackUnmarkedCandidate.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(backupDirectory);
+			File.saveContent(Path.join([backupDirectory, "Main.generated"]), "stale-backup");
+			writeTestTransactionMarker(transactionRoot, publicDirectory, DirectoryOutputTransaction.STATE_CANDIDATE_PUBLISHED);
+			final finishPublishedCandidate = new DirectoryOutputTransaction(publicDirectory);
+			finishPublishedCandidate.begin();
+			if (File.getContent(Path.join([publicDirectory, "Main.generated"])) != "B-main") {
+				Context.fatalError("interrupted output recovery replaced a published candidate with stale backup data", Context.currentPos());
+			}
+			finishPublishedCandidate.abort();
+			assertNoOutputTransactionState(tempRoot);
+
+			ensureTestDirectory(transactionRoot);
+			File.saveContent(Path.join([transactionRoot, DirectoryOutputTransaction.MARKER_FILENAME]), "{}");
+			var malformedFailed = false;
+			try {
+				new DirectoryOutputTransaction(publicDirectory).begin();
+			} catch (_) {
+				malformedFailed = true;
+			}
+			if (!malformedFailed || !FileSystem.exists(transactionRoot)) {
+				Context.fatalError("malformed output transaction state was not preserved for explicit recovery", Context.currentPos());
+			}
+			deleteTestTree(transactionRoot);
+		} catch (cause:Dynamic) {
+			failure = cause;
+		}
+		if (FileSystem.exists(tempRoot))
+			deleteTestTree(tempRoot);
+		if (failure != null)
+			throw failure;
+	}
+
+	static function writeTestTransactionMarker(transactionRoot:String, publicDirectory:String, state:String):Void {
+		ensureTestDirectory(transactionRoot);
+		File.saveContent(Path.join([transactionRoot, DirectoryOutputTransaction.MARKER_FILENAME]), [
+			DirectoryOutputTransaction.MARKER_FORMAT,
+			state,
+			Path.normalize(FileSystem.absolutePath(publicDirectory))
+		].join("\n"));
+	}
+
+	static function assertNoOutputTransactionState(tempRoot:String):Void {
+		for (entry in FileSystem.readDirectory(tempRoot)) {
+			if (entry.indexOf(".reflaxe-output-transaction") != -1) {
+				Context.fatalError('output transaction left private state "$entry"', Context.currentPos());
+			}
+		}
+	}
+
+	static function ensureTestDirectory(path:String):Void {
+		if (FileSystem.exists(path))
+			return;
+		final parent = Path.directory(path);
+		if (parent != path && parent.length > 0)
+			ensureTestDirectory(parent);
+		FileSystem.createDirectory(path);
+	}
+
+	static function deleteTestTree(path:String):Void {
+		if (!FileSystem.isDirectory(path)) {
+			FileSystem.deleteFile(path);
+			return;
+		}
+		for (entry in FileSystem.readDirectory(path))
+			deleteTestTree(Path.join([path, entry]));
+		FileSystem.deleteDirectory(path);
 	}
 
 	static function assertLifecycleSchemaFailsClosed():Void {
