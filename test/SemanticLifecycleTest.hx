@@ -46,6 +46,7 @@ class SemanticLifecycleTest {
 		assertTypingBatchesAccumulate();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
+		assertLexicalLocalIdentityShapeFailsClosed();
 		assertLexicalLocalIdentitiesFailClosed();
 		assertProgramRevisionNormalizesHostLocalIds();
 		assertProgramRevisionKeepsSemanticChanges();
@@ -197,6 +198,16 @@ class SemanticLifecycleTest {
 		kinds.sort(Reflect.compare);
 		if (valueIdentities.length != 4 || kinds.join("|") != "catch-binding|function-argument|variable|variable") {
 			Context.fatalError('shadowed lambda, loop, catch, and variable bindings were not distinct: ${kinds.join("|")}', Context.currentPos());
+		}
+	}
+
+	static function assertLexicalLocalIdentityShapeFailsClosed():Void {
+		final valid = LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "0", 64);
+		if (!LexicalLocalIdentityPlan.isReusableId(valid)
+			|| LexicalLocalIdentityPlan.isReusableId("17")
+			|| LexicalLocalIdentityPlan.isReusableId(LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "0", 63))
+			|| LexicalLocalIdentityPlan.isReusableId(LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "G", 64))) {
+			Context.fatalError("lexical-local publication validation accepted a host ID or rejected one complete stable ID", Context.currentPos());
 		}
 	}
 

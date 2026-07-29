@@ -20,6 +20,7 @@ import haxe.macro.Type.TypedExpr;
 **/
 class LexicalLocalIdentityPlan {
 	public static inline final SCHEMA_VERSION = 1;
+	public static inline final ID_PREFIX = "lexical-local-v1:";
 
 	/** Stable function or body identity that owns every local in this plan. **/
 	public final ownerId:String;
@@ -59,6 +60,27 @@ class LexicalLocalIdentityPlan {
 		}
 		result.validateReferences();
 		return result;
+	}
+
+	/**
+		Reports whether a published value is one complete lexical-local v1 ID.
+
+		Targets use this at semantic-artifact boundaries so a host's temporary
+		numeric binding ID cannot be accepted merely because it was converted to a
+		string. The exact lowercase SHA-256 payload keeps malformed or truncated
+		identities from entering revisions and reports.
+	**/
+	public static function isReusableId(value:String):Bool {
+		if (value == null || !StringTools.startsWith(value, ID_PREFIX) || value.length != ID_PREFIX.length + 64)
+			return false;
+		for (index in ID_PREFIX.length...value.length) {
+			final code = value.charCodeAt(index);
+			final isDigit = code >= 48 && code <= 57;
+			final isLowerHex = code >= 97 && code <= 102;
+			if (!isDigit && !isLowerHex)
+				return false;
+		}
+		return true;
 	}
 
 	/** Returns stable identities in canonical source-structure order. **/
@@ -250,7 +272,7 @@ class LexicalLocalIdentity {
 			path,
 			name
 		].map(encodePart).join("|");
-		return new LexicalLocalIdentity('lexical-local-v${LexicalLocalIdentityPlan.SCHEMA_VERSION}:${Sha256.encode(payload)}', ownerId, kind, path, name);
+		return new LexicalLocalIdentity(LexicalLocalIdentityPlan.ID_PREFIX + Sha256.encode(payload), ownerId, kind, path, name);
 	}
 
 	static inline function encodePart(value:String):String {
