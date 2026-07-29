@@ -1,6 +1,7 @@
 package reflaxe.lifecycle;
 
 #if (macro || reflaxe_runtime)
+import haxe.macro.Context;
 import haxe.macro.Type;
 import haxe.macro.Type.ModuleType;
 
@@ -40,7 +41,7 @@ class CompleteProgramTypeCapture {
 			seen.set(id, true);
 			next.push(moduleType);
 		}
-		captured = next;
+		captured = orderDeclarations(next);
 	}
 
 	/**
@@ -66,6 +67,55 @@ class CompleteProgramTypeCapture {
 				throw new SemanticLifecycleError("reflaxe:malformed-complete-program-type",
 					"Haxe's complete generation view contained a value that was not a module declaration.");
 		}
+	}
+
+	/**
+		Restores source declaration order inside each Haxe module.
+
+		Haxe's complete `onGenerate` view can present secondary declarations in a
+		different order from the earlier typed-module callback. Target backends may
+		use same-module order to place type-dependent storage safely, so the
+		complete-program cut must not silently change that behavior. The first
+		appearance of each module still owns cross-module order; only declarations
+		from that same source module are normalized.
+	**/
+	static function orderDeclarations(declarations:Array<ModuleType>):Array<ModuleType> {
+		final moduleOrder:Array<String> = [];
+		final byModule:Map<String, Array<{
+			declaration:ModuleType,
+			min:Int,
+			max:Int,
+			id:String
+		}>> = [];
+		for (declaration in declarations) {
+			final common = declaration.getCommonData();
+			if (!byModule.exists(common.module)) {
+				byModule.set(common.module, []);
+				moduleOrder.push(common.module);
+			}
+			final position = Context.getPosInfos(common.pos);
+			byModule[common.module].push({
+				declaration: declaration,
+				min: position.min,
+				max: position.max,
+				id: declaration.getUniqueId()
+			});
+		}
+
+		final ordered:Array<ModuleType> = [];
+		for (moduleId in moduleOrder) {
+			final entries = byModule[moduleId];
+			entries.sort((left, right) -> {
+				if (left.min != right.min)
+					return left.min - right.min;
+				if (left.max != right.max)
+					return left.max - right.max;
+				return Reflect.compare(left.id, right.id);
+			});
+			for (entry in entries)
+				ordered.push(entry.declaration);
+		}
+		return ordered;
 	}
 }
 #end

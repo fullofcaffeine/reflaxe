@@ -94,6 +94,20 @@ class SemanticLifecycleTest {
 			|| captured[1].getUniqueId() != second.getUniqueId()) {
 			Context.fatalError("the complete onGenerate view did not replace a stale partial request defensively", Context.currentPos());
 		}
+		final sourceOrderedTypes = Context.getModule("SameModuleOrder");
+		final sourceOrdered = sourceOrderedTypes.map(typeAsModuleType);
+		final reversed = sourceOrderedTypes.copy();
+		reversed.reverse();
+		capture.replace(reversed);
+		final normalized = capture.take();
+		if (normalized.length != sourceOrdered.length) {
+			Context.fatalError("same-module complete-program normalization lost a source declaration", Context.currentPos());
+		}
+		for (index in 0...sourceOrdered.length) {
+			if (normalized[index].getUniqueId() != sourceOrdered[index].getUniqueId()) {
+				Context.fatalError("the complete onGenerate view did not preserve same-module source declaration order", Context.currentPos());
+			}
+		}
 		final missing = expectLifecycleError(() -> capture.take());
 		if (missing.code != "reflaxe:missing-complete-program") {
 			Context.fatalError("a consumed complete-program capture did not fail closed", Context.currentPos());
@@ -441,9 +455,16 @@ class SemanticLifecycleTest {
 	}
 
 	static function moduleType(name:String):ModuleType {
-		return switch (Context.getType(name)) {
+		return typeAsModuleType(Context.getType(name));
+	}
+
+	static function typeAsModuleType(type:haxe.macro.Type):ModuleType {
+		return switch (type) {
 			case TInst(reference, _): TClassDecl(reference);
-			case _: Context.fatalError('$name did not resolve to a class', Context.currentPos());
+			case TEnum(reference, _): TEnumDecl(reference);
+			case TType(reference, _): TTypeDecl(reference);
+			case TAbstract(reference, _): TAbstract(reference);
+			case _: Context.fatalError("type did not resolve to a module declaration", Context.currentPos());
 		}
 	}
 
