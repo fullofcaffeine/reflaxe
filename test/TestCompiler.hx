@@ -138,6 +138,27 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		}
 	}
 
+	/**
+		Proves that post-publication target work sees only the stable public path.
+
+		The probe reports through a compiler warning instead of mutating the
+		framework-owned output tree after its generated-file receipt was sealed.
+	**/
+	override function onOutputPublished() {
+		if(!Context.defined("reflaxe_output_published_hook_probe")) {
+			return;
+		}
+		final activeDirectory = output.outputDir;
+		final publicDirectory = output.publicOutputDir;
+		if(activeDirectory == null
+			|| publicDirectory == null
+			|| haxe.io.Path.normalize(activeDirectory) != haxe.io.Path.normalize(publicDirectory)
+			|| activeDirectory.indexOf(".reflaxe-output-transaction") != -1) {
+			throw "post-publication hook observed private output state";
+		}
+		Context.warning("REFLAXE_OUTPUT_PUBLISHED_HOOK:PASS", Context.currentPos());
+	}
+
 	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			for(moduleType in moduleTypes) {
