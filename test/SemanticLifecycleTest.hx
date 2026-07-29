@@ -53,7 +53,7 @@ class SemanticLifecycleTest {
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
 		assertLexicalLocalIdentityShapeFailsClosed();
-		assertLexicalLocalIdentitiesFailClosed();
+		assertLexicalLocalRebindingsReuseIdentityAndMissingLocalsFailClosed();
 		assertProgramRevisionNormalizesHostLocalIds();
 		assertProgramRevisionKeepsSemanticChanges();
 		assertFunctionCacheIsRequestScoped();
@@ -511,7 +511,11 @@ class SemanticLifecycleTest {
 		}
 	}
 
-	static function assertLexicalLocalIdentitiesFailClosed():Void {
+	/**
+		Proves assignment-to-declaration preprocessing can rebind one Haxe local
+		without inventing a second stable identity.
+	**/
+	static function assertLexicalLocalRebindingsReuseIdentityAndMissingLocalsFailClosed():Void {
 		final declared = Context.typeExpr(macro {
 			var value = 1;
 			value;
@@ -524,7 +528,7 @@ class SemanticLifecycleTest {
 			case TVar(local, _): local;
 			case _: Context.fatalError("expected a typed local declaration", Context.currentPos());
 		}
-		final duplicate:TypedExpr = {
+		final rebound:TypedExpr = {
 			expr: haxe.macro.Type.TypedExprDef.TBlock([block[0], block[0], block[1]]),
 			pos: declared.pos,
 			t: declared.t
@@ -534,11 +538,11 @@ class SemanticLifecycleTest {
 			pos: declared.pos,
 			t: declared.t
 		};
-		final duplicateError = expectMessage(() -> LexicalLocalIdentityPlan.build("duplicate-owner", duplicate));
+		final reboundPlan = LexicalLocalIdentityPlan.build("rebound-owner", rebound);
 		final missingError = expectMessage(() -> LexicalLocalIdentityPlan.build("missing-owner", missing));
-		if (duplicateError.indexOf("reflaxe:duplicate-lexical-local-binding") == -1
-			|| missingError.indexOf("reflaxe:missing-lexical-local-identity") == -1) {
-			Context.fatalError('lexical-local validation did not fail closed: duplicate=$duplicateError missing=$missingError', Context.currentPos());
+		if (reboundPlan.identities().length != 1 || missingError.indexOf("reflaxe:missing-lexical-local-identity") == -1) {
+			Context.fatalError('lexical-local rebinding or missing-local validation failed: identities=${reboundPlan.identities().length} missing=$missingError',
+				Context.currentPos());
 		}
 	}
 
