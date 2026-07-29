@@ -85,9 +85,9 @@ class CompleteProgramTypeCapture {
 			declaration:ModuleType,
 			min:Int,
 			max:Int,
-			id:String
+			hostIndex:Int
 		}>> = [];
-		for (declaration in declarations) {
+		for (hostIndex => declaration in declarations) {
 			final common = declaration.getCommonData();
 			if (!byModule.exists(common.module)) {
 				byModule.set(common.module, []);
@@ -98,7 +98,7 @@ class CompleteProgramTypeCapture {
 				declaration: declaration,
 				min: position.min,
 				max: position.max,
-				id: declaration.getUniqueId()
+				hostIndex: hostIndex
 			});
 		}
 
@@ -110,7 +110,7 @@ class CompleteProgramTypeCapture {
 					return left.min - right.min;
 				if (left.max != right.max)
 					return left.max - right.max;
-				return Reflect.compare(left.id, right.id);
+				return left.hostIndex - right.hostIndex;
 			});
 			for (entry in entries)
 				ordered.push(entry.declaration);

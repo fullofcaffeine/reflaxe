@@ -1,3 +1,3 @@
 class SameModuleOrder {}
-class SourceFirst {}
-class SourceSecond {}
+class ZuluFirst {}
+class AlphaSecond {}
