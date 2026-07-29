@@ -373,7 +373,11 @@ class OutputManager {
 		}
 		if(outputTransaction != null) {
 			final normalized = haxe.io.Path.normalize(path);
-			if(normalized == ".." || StringTools.startsWith(normalized, "../")) {
+			if(normalized.length == 0
+				|| normalized == "."
+				|| normalized == ".."
+				|| StringTools.startsWith(normalized, "../")
+				|| StringTools.startsWith(normalized, "..\\")) {
 				throw 'reflaxe:escaping-transaction-output-path: Transactional output path "$path" escapes the owned output directory.';
 			}
 			path = normalized;

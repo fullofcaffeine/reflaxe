@@ -169,6 +169,9 @@ if [[ -e "$WORK_DIR/server/test/EscapedFailureProbe.testout" ]]; then
 	exit 1
 fi
 
+run_server_build_expect_failure reflaxe_output_transaction_backslash_escape
+assert_trees_equal "backslash-escaping output rejection versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+
 run_server_build_expect_failure reflaxe_output_transaction_absolute
 assert_trees_equal "absolute output rejection versus prior complete output" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
 if [[ -e "$WORK_DIR/server/test/AbsoluteFailureProbe.testout" ]]; then

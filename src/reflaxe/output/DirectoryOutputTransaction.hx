@@ -33,6 +33,7 @@ class DirectoryOutputTransaction {
 	public static inline final STATE_CANDIDATE_PUBLISHED = "candidate-published";
 
 	#if reflaxe_lifecycle_test
+	public static inline final TEST_BEFORE_INITIAL_MARKER = "before-initial-marker";
 	public static inline final TEST_BEFORE_PUBLIC_MOVE = "before-public-move";
 	public static inline final TEST_AFTER_PUBLIC_MOVE = "after-public-move";
 	public static inline final TEST_AFTER_CANDIDATE_PUBLISH = "after-candidate-publish";
@@ -84,10 +85,28 @@ class DirectoryOutputTransaction {
 			throw error("reflaxe:conflicting-output-transaction", 'Owned transaction path "$transactionRoot" still exists after recovery.');
 		}
 
-		ensureDirectory(candidateDirectory);
-		writeMarker(STATE_PREPARING);
-		active = true;
-		return candidateDirectory;
+		try {
+			ensureDirectory(candidateDirectory);
+			testCheckpoint(#if reflaxe_lifecycle_test TEST_BEFORE_INITIAL_MARKER #else "" #end);
+			writeMarker(STATE_PREPARING);
+			active = true;
+			return candidateDirectory;
+		} catch (cause:Dynamic) {
+			var cleanupFailure:Null<String> = null;
+			try {
+				if (FileSystem.exists(transactionRoot))
+					deleteTree(transactionRoot);
+			} catch (cleanupCause:Dynamic) {
+				cleanupFailure = Std.string(cleanupCause);
+			}
+			if (cleanupFailure != null) {
+				throw error("reflaxe:output-transaction-initialization-cleanup-failed",
+					'Starting private output for "$publicDirectory" failed (${Std.string(cause)}), and removing the incomplete transaction state also failed ($cleanupFailure). ' +
+					'The owned transaction root is "$transactionRoot".');
+			}
+			throw error("reflaxe:output-transaction-initialization-failed",
+				'Starting private output for "$publicDirectory" failed and its incomplete private state was removed: ${Std.string(cause)}');
+		}
 	}
 
 	/**

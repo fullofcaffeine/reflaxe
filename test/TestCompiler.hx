@@ -130,6 +130,9 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		if(Context.defined("reflaxe_output_transaction_escape")) {
 			output.saveFile("../EscapedFailureProbe.testout", "must-not-escape");
 		}
+		if(Context.defined("reflaxe_output_transaction_backslash_escape")) {
+			output.saveFile("..\\BackslashEscapeFailureProbe.testout", "must-not-escape");
+		}
 		if(Context.defined("reflaxe_output_transaction_absolute")) {
 			output.saveFile(haxe.io.Path.join([Sys.getCwd(), "AbsoluteFailureProbe.testout"]), "must-not-write-absolute");
 		}

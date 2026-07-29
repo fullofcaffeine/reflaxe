@@ -115,6 +115,21 @@ class SemanticLifecycleTest {
 				assertNoOutputTransactionState(tempRoot);
 			}
 
+			final initializationFailure = new DirectoryOutputTransaction(publicDirectory);
+			initializationFailure.failAtForTest(DirectoryOutputTransaction.TEST_BEFORE_INITIAL_MARKER);
+			var initializationFailed = false;
+			try {
+				initializationFailure.begin();
+			} catch (_) {
+				initializationFailed = true;
+			}
+			if (!initializationFailed
+				|| File.getContent(Path.join([publicDirectory, "Main.generated"])) != "A-main"
+				|| File.getContent(Path.join([publicDirectory, "OnlyA.generated"])) != "A-only") {
+				Context.fatalError("failed output transaction initialization changed the complete A tree", Context.currentPos());
+			}
+			assertNoOutputTransactionState(tempRoot);
+
 			final aborted = new DirectoryOutputTransaction(publicDirectory);
 			final abortedCandidate = aborted.begin();
 			File.saveContent(Path.join([abortedCandidate, "Main.generated"]), "aborted");
@@ -261,7 +276,7 @@ class SemanticLifecycleTest {
 
 	/** Proves persisted file receipts cannot escape their owned output tree. **/
 	static function assertOutputMetadataRejectsUnsafePaths():Void {
-		for (unsafePath in ["../outside.generated", "/outside.generated"]) {
+		for (unsafePath in ["../outside.generated", "..\\outside.generated", "/outside.generated"]) {
 			final content = haxe.Json.stringify({
 				version: 1,
 				id: 1,
