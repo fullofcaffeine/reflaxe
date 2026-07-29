@@ -27,7 +27,7 @@ build_case() {
 	shift
 	(
 		cd "$WORK_DIR/$name/test"
-		"$HAXE_BIN" Test.hxml -D reflaxe_program_revision_probe "$@"
+		"$HAXE_BIN" Test.hxml -D reflaxe_program_revision_probe -D reflaxe_program_raw_revision_probe "$@"
 	)
 	test -f "$WORK_DIR/$name/test/testlang/ProgramRevision.testout"
 }
