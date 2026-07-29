@@ -259,6 +259,10 @@ class ReflectCompiler {
 			}
 			throw cause;
 		}
+		// The generated tree is now public. Keep external build or inspection
+		// work outside the candidate-abort scope because publication cannot be
+		// rolled back safely after its commit point.
+		compiler.onOutputPublished();
 	}
 
 	/** Filters types based on user-selected generation defines. **/

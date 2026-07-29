@@ -383,6 +383,17 @@ abstract class BaseCompiler {
 	public function onCompileStart() {}
 	public function onCompileEnd() {}
 	public function onOutputComplete() {}
+	/**
+		Called after Reflaxe has published the complete generated output.
+
+		`onOutputComplete` still runs against the private candidate when
+		transactional directory output is enabled. Use this later hook for target
+		work that must observe the stable public path, such as invoking an
+		external build system whose reusable state must not name the candidate.
+
+		A failure here does not roll back already-published generated source.
+	**/
+	public function onOutputPublished() {}
 	public function onClassAdded(cls: ClassType, output: Null<String>): Void {}
 	public function onEnumAdded(cls: EnumType, output: Null<String>): Void {}
 	public function onTypedefAdded(cls: DefType, output: Null<String>): Void {}

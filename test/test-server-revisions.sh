@@ -64,6 +64,19 @@ run_clean_build() {
 	)
 }
 
+run_clean_publication_hook_probe() {
+	local output
+	output="$(
+		cd "$WORK_DIR/clean/test"
+		"$HAXE_BIN" Test.hxml "${COMMON_ARGS[@]}" -D reflaxe_output_published_hook_probe 2>&1
+	)"
+	if ! grep -Fq "REFLAXE_OUTPUT_PUBLISHED_HOOK:PASS" <<<"$output"; then
+		printf '%s\n' "$output" >&2
+		echo "post-publication target hook did not observe the committed public output" >&2
+		return 1
+	fi
+}
+
 run_server_build() {
 	(
 		cd "$WORK_DIR/server/test"
@@ -130,6 +143,8 @@ prepare_tree server
 
 run_clean_build
 cp -R "$WORK_DIR/clean/test/testlang" "$WORK_DIR/clean-baseline"
+run_clean_publication_hook_probe
+assert_trees_equal "post-publication hook versus ordinary clean output" "$WORK_DIR/clean-baseline" "$WORK_DIR/clean/test/testlang"
 
 "$HAXE_BIN" --wait "$PORT" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
