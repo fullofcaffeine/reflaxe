@@ -58,7 +58,7 @@ class ClassFuncData {
 		this.args = args;
 		this.tfunc = tfunc;
 		this.expr = expr;
-		this.bodyRevision = FunctionBodyRevision.initial(expr);
+		this.bodyRevision = FunctionBodyRevision.initial(expr, tfunc == null ? null : tfunc.args.map(argument -> argument.v));
 
 		if(extractArgumentMetadata) {
 			extractArgumentMeta();

@@ -9,6 +9,7 @@ import reflaxe.BaseCompiler;
 import reflaxe.data.ClassFuncData;
 import reflaxe.helpers.ClassFieldHelper;
 import reflaxe.lifecycle.FunctionBodyRevision;
+import reflaxe.lifecycle.LexicalLocalIdentityPlan;
 import reflaxe.lifecycle.ModuleTypeBatchAccumulator;
 import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
@@ -43,6 +44,9 @@ class SemanticLifecycleTest {
 
 	static function execute():Void {
 		assertTypingBatchesAccumulate();
+		assertLexicalLocalIdentitiesNormalizeHostIds();
+		assertLexicalLocalIdentitiesRemainDistinct();
+		assertLexicalLocalIdentitiesFailClosed();
 		assertProgramRevisionNormalizesHostLocalIds();
 		assertProgramRevisionKeepsSemanticChanges();
 		assertFunctionCacheIsRequestScoped();
@@ -130,6 +134,100 @@ class SemanticLifecycleTest {
 		}
 		if (NormalizedProgramBodyDigest.digestExpression(first) != NormalizedProgramBodyDigest.digestExpression(second)) {
 			Context.fatalError("program body digest retained process-wide local-variable numbering", Context.currentPos());
+		}
+		if (FunctionBodyRevision.digestExpression(first) != FunctionBodyRevision.digestExpression(second)) {
+			Context.fatalError("function body revision retained process-wide local-variable numbering", Context.currentPos());
+		}
+	}
+
+	static function assertLexicalLocalIdentitiesNormalizeHostIds():Void {
+		final first = Context.typeExpr(macro {
+			var total = 0;
+			total += 1;
+			total;
+		});
+		Context.typeExpr(macro {
+			var unrelatedFirst = 0;
+			var unrelatedSecond = unrelatedFirst + 1;
+			unrelatedSecond;
+		});
+		final second = Context.typeExpr(macro {
+			var total = 0;
+			total += 1;
+			total;
+		});
+		final firstPlan = LexicalLocalIdentityPlan.build("identity-test-owner", first);
+		final secondPlan = LexicalLocalIdentityPlan.build("identity-test-owner", second);
+		final firstIds = firstPlan.identities().map(identity -> identity.id);
+		final secondIds = secondPlan.identities().map(identity -> identity.id);
+		if (TypedExprTools.toString(first) == TypedExprTools.toString(second)) {
+			Context.fatalError("lexical-local regression setup did not perturb Haxe IDs", Context.currentPos());
+		}
+		if (firstIds.join("|") != secondIds.join("|")) {
+			Context.fatalError("lexical-local identities retained Haxe allocation order", Context.currentPos());
+		}
+	}
+
+	static function assertLexicalLocalIdentitiesRemainDistinct():Void {
+		final expression = Context.typeExpr(macro {
+			var value = 0;
+			final nested = function(value:Int):Int {
+				for (value in [value]) {
+					try {
+						if (value > 0)
+							throw "positive";
+					} catch (value:String) {
+						return value.length;
+					}
+				}
+				return value;
+			};
+			nested(value);
+		});
+		final identities = LexicalLocalIdentityPlan.build("identity-distinction-owner", expression).identities();
+		final unique:Map<String, Bool> = [];
+		for (identity in identities) {
+			if (unique.exists(identity.id)) {
+				Context.fatalError('duplicate lexical-local identity ${identity.id}', Context.currentPos());
+			}
+			unique.set(identity.id, true);
+		}
+		final valueIdentities = identities.filter(identity -> identity.name == "value");
+		final kinds = valueIdentities.map(identity -> identity.kind);
+		kinds.sort(Reflect.compare);
+		if (valueIdentities.length != 4 || kinds.join("|") != "catch-binding|function-argument|variable|variable") {
+			Context.fatalError('shadowed lambda, loop, catch, and variable bindings were not distinct: ${kinds.join("|")}', Context.currentPos());
+		}
+	}
+
+	static function assertLexicalLocalIdentitiesFailClosed():Void {
+		final declared = Context.typeExpr(macro {
+			var value = 1;
+			value;
+		});
+		final block = switch (declared.expr) {
+			case TBlock(expressions): expressions;
+			case _: Context.fatalError("expected a typed block for lexical-local failure fixtures", Context.currentPos());
+		}
+		final local = switch (block[0].expr) {
+			case TVar(local, _): local;
+			case _: Context.fatalError("expected a typed local declaration", Context.currentPos());
+		}
+		final duplicate:TypedExpr = {
+			expr: haxe.macro.Type.TypedExprDef.TBlock([block[0], block[0], block[1]]),
+			pos: declared.pos,
+			t: declared.t
+		};
+		final missing:TypedExpr = {
+			expr: haxe.macro.Type.TypedExprDef.TBlock([block[1]]),
+			pos: declared.pos,
+			t: declared.t
+		};
+		final duplicateError = expectMessage(() -> LexicalLocalIdentityPlan.build("duplicate-owner", duplicate));
+		final missingError = expectMessage(() -> LexicalLocalIdentityPlan.build("missing-owner", missing));
+		if (duplicateError.indexOf("reflaxe:duplicate-lexical-local-binding") == -1
+			|| missingError.indexOf("reflaxe:missing-lexical-local-identity") == -1) {
+			Context.fatalError('lexical-local validation did not fail closed: duplicate=$duplicateError missing=$missingError', Context.currentPos());
 		}
 	}
 
@@ -327,6 +425,17 @@ class SemanticLifecycleTest {
 			return error;
 		}
 		return Context.fatalError("expected a semantic lifecycle error", Context.currentPos());
+	}
+
+	static function expectMessage(run:() -> Void):String {
+		try {
+			run();
+		} catch (error:haxe.Exception) {
+			return error.message;
+		} catch (error:Dynamic) {
+			return Std.string(error);
+		}
+		return Context.fatalError("expected a lexical-local identity error", Context.currentPos());
 	}
 	#end
 }
