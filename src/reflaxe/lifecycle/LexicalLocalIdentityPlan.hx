@@ -14,6 +14,11 @@ import haxe.macro.Type.TypedExpr;
 	plan replaces that number with an owner-bound structural path before a target
 	can publish a body, lowering plan, or diagnostic report.
 
+	Some target-neutral preprocessors express a later assignment as another
+	`TVar` node with the original host ID. Such a node is a rebinding occurrence
+	of the same Haxe local, not a second lexical local. Its first declaration
+	therefore owns the stable identity and later occurrences reuse it.
+
 	The traversal below is deliberately explicit. Its child-role names and array
 	indices are part of schema v1, so changing a generic AST iterator cannot
 	silently renumber otherwise unchanged locals.
@@ -113,7 +118,7 @@ class LexicalLocalIdentityPlan {
 
 	function register(local:TVar, kind:String, path:String):Void {
 		if (byHostId.exists(local.id)) {
-			throw '[reflaxe:duplicate-lexical-local-binding] Local "${local.name}" was bound more than once under owner "$ownerId".';
+			return;
 		}
 		final identity = LexicalLocalIdentity.create(ownerId, kind, path, local.name);
 		if (identitiesById.exists(identity.id)) {

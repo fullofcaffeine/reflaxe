@@ -191,12 +191,23 @@ class BaseCompilerOptions {
 	/**
 		If `true`, any old output files that are not generated
 		in the most recent compilation will be deleted.
-		A text file containing all the current output files is
-		saved in the output directory to help keep track. 
+		A JSON receipt containing all the current output files is
+		saved in the output directory to help keep track.
 
 		This feature is ignored when "fileOutputType" is SingleFile.
 	**/
 	public var deleteOldOutput: Bool = true;
+
+	/**
+		If `true`, directory-shaped output is generated privately and published
+		only after target completion succeeds.
+
+		Enable this only when the compiler owns the complete output directory.
+		Publishing replaces that directory, so unknown files cannot be preserved
+		without an explicit target-level owner. `Manual` and `SingleFile` output
+		are not transactional.
+	**/
+	public var transactionalFileOutput: Bool = false;
 
 	/**
 		If `false`, an error is thrown if a function without
@@ -469,6 +480,34 @@ abstract class BaseCompiler {
 			this.output.generateFiles();
 		} else {
 			err("Attempted to output without being assigned destination.");
+		}
+	}
+
+	/**
+		Starts a private directory candidate before any target file is written.
+
+		`ReflectCompiler` owns this lifecycle. Target implementations should keep
+		using `output.saveFile` and should use `output.publicOutputDir` whenever a
+		stable user-requested path, rather than the active candidate path, is part
+		of configuration or diagnostics.
+	**/
+	public function beginOutputTransaction(): Void {
+		if(output != null) {
+			output.beginOutputTransaction();
+		}
+	}
+
+	/** Publishes the validated candidate after `onOutputComplete` succeeds. **/
+	public function commitOutputTransaction(): Void {
+		if(output != null) {
+			output.commitOutputTransaction();
+		}
+	}
+
+	/** Discards private output after generation or target completion fails. **/
+	public function abortOutputTransaction(): Void {
+		if(output != null) {
+			output.abortOutputTransaction();
 		}
 	}
 
