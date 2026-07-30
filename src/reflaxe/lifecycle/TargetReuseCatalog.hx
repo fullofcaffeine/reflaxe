@@ -144,10 +144,22 @@ class TargetReuseCatalog {
 	public static inline final DEFAULT_MAXIMUM_ENTRY_BYTES = 64 * 1024 * 1024;
 	public static inline final LOCAL_REALM_IDENTITY = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
+	// Haxe's cached eval interpreter reinitializes ordinary static fields between
+	// compiler-server requests. `@:persistent` is the public macro-runtime
+	// ownership marker that keeps these values in that interpreter realm.
+	@:persistent
 	static final sharedCatalog = new TargetReuseCatalog(DEFAULT_TOTAL_BUDGET_BYTES, DEFAULT_MAXIMUM_ENTRY_BYTES);
+
+	@:persistent
 	static final sharedRealmIdentityRevision = createRealmIdentityRevision();
+
+	@:persistent
 	static var sharedRequestSequence:Int = 0;
+
+	@:persistent
 	static var sharedResetGeneration:Int = 0;
+
+	@:persistent
 	static var sharedLastResetCause:String = "realm-created";
 
 	public final totalBudgetBytes:Int;
