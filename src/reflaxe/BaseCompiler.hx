@@ -447,6 +447,8 @@ abstract class BaseCompiler {
 	public var programRevision(default, null): Null<ProgramRevision>;
 	public var finalProgramFingerprint(default, null): Null<FinalProgramFingerprintSnapshot>;
 	public var targetReuseProbe(default, null): Null<TargetReuseProbe>;
+	/** Time spent building the final fingerprint and exact target request key. **/
+	public var finalProgramFingerprintAndKeyMilliseconds(default, null): Null<Int>;
 	/** Process-local evidence for the bounded macro-realm catalog owner. **/
 	public var targetReuseCatalogRealm(default, null): Null<TargetReuseCatalogRealmObservation>;
 	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
@@ -482,6 +484,17 @@ abstract class BaseCompiler {
 			blockers.push(blocker);
 		}
 		targetReuseProbe = TargetReuseProbe.build(snapshot, targetReuseNamespace(), targetReuseRevisionComponents(snapshot), blockers);
+	}
+
+	/** Records the complete fingerprint/key cost immediately after sealing it. **/
+	final public function recordFinalProgramFingerprintAndKeyMilliseconds(value: Int): Void {
+		if(finalProgramFingerprint == null || targetReuseProbe == null) {
+			throw "Cannot record final-program fingerprint timing before the target reuse probe is sealed.";
+		}
+		if(value < 0) {
+			throw "Final-program fingerprint timing must not be negative.";
+		}
+		finalProgramFingerprintAndKeyMilliseconds = value;
 	}
 
 	/**

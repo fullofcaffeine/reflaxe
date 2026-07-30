@@ -221,12 +221,15 @@ class ReflectCompiler {
 
 		// Apply other type filters
 		final moduleTypes = applyModuleFilters(moduleTypes);
+		final fingerprintStarted = haxe.Timer.stamp();
 		final finalProgramFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes(moduleTypes);
 		final frameworkBlockers = initCallbacks == null ? [] : ["reflaxe:unrevisioned-compile-begin-callback"];
 		if(Context.defined("no-macro-cache")) {
 			frameworkBlockers.push("reflaxe:no-macro-cache");
 		}
 		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);
+		final fingerprintMilliseconds = Std.int((haxe.Timer.stamp() - fingerprintStarted) * 1000.0);
+		compiler.recordFinalProgramFingerprintAndKeyMilliseconds(fingerprintMilliseconds < 0 ? 0 : fingerprintMilliseconds);
 		compiler.prepareFinalProgram(moduleTypes, finalProgramFingerprint);
 		compiler.beginProgramRevision(finalProgramFingerprint.programRevision);
 
