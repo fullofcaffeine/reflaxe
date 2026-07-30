@@ -18,6 +18,7 @@ import reflaxe.output.StringOrBytes;
 import reflaxe.preprocessors.ExpressionPreprocessor;
 import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.ReflaxeImplementationRevision;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleOptions;
 import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
@@ -502,7 +503,15 @@ abstract class BaseCompiler {
 		for(blocker in targetReuseBlockers(snapshot)) {
 			blockers.push(blocker);
 		}
-		targetReuseProbe = TargetReuseProbe.build(snapshot, targetReuseNamespace(), targetReuseRevisionComponents(snapshot), blockers);
+		final targetNamespace = targetReuseNamespace();
+		final revisionComponents = targetReuseRevisionComponents(snapshot);
+		if(targetNamespace != null && targetNamespace.length > 0) {
+			revisionComponents.push(new TargetReuseRevisionComponent(
+				ReflaxeImplementationRevision.COMPONENT_NAME,
+				ReflaxeImplementationRevision.current()
+			));
+		}
+		targetReuseProbe = TargetReuseProbe.build(snapshot, targetNamespace, revisionComponents, blockers);
 	}
 
 	/** Records the complete fingerprint/key cost immediately after sealing it. **/

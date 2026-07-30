@@ -18,6 +18,7 @@ import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.LexicalLocalIdentityPlan;
 import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.ReflaxeImplementationRevision;
 import reflaxe.lifecycle.SemanticArtifactBinding;
 import reflaxe.lifecycle.SemanticArtifactFamily;
 import reflaxe.lifecycle.SemanticArtifactReplacement;
@@ -674,6 +675,10 @@ class SemanticLifecycleTest {
 
 	/** Proves exact target keys are order-stable and eligibility fails closed. **/
 	static function assertTargetReuseProbeFailsClosed():Void {
+		final frameworkRevision = ReflaxeImplementationRevision.current();
+		if (!~/^sha256:[0-9a-f]{64}$/.match(frameworkRevision)) {
+			Context.fatalError("the generic Reflaxe source inventory did not produce an exact SHA-256 revision", Context.currentPos());
+		}
 		final snapshot = FinalProgramFingerprintSnapshot.fromModuleTypes([moduleType("MyClass")]);
 		final forward = TargetReuseProbe.build(snapshot, "test-target", [
 			new TargetReuseRevisionComponent("implementation", "sha256:implementation"),
