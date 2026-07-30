@@ -6,12 +6,14 @@ import haxe.ds.ObjectMap;
 import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Expr.Metadata;
+import haxe.macro.Expr.MetadataEntry;
 import haxe.macro.ExprTools;
 import haxe.macro.Type;
 import haxe.macro.Type.ClassField;
 import haxe.macro.Type.ModuleType;
 import haxe.macro.Type.TypeParameter;
 import haxe.macro.Type.TypedExpr;
+import haxe.macro.TypedExprTools;
 import sys.FileSystem;
 import sys.io.File;
 
@@ -83,9 +85,12 @@ private class FinalProgramFingerprintBuilder {
 	final sourceAuthorityBlockers:Array<String> = [];
 	final compatibilityEntries:Array<String> = ["program-revision-schema|2"];
 	final bodyRevisionByField:ObjectMap<ClassField, String> = new ObjectMap();
+	final compilerMainField:Null<ClassField>;
 	var functionCount = 0;
 
-	public function new() {}
+	public function new() {
+		compilerMainField = findCompilerMainField();
+	}
 
 	public function build(moduleTypes:Array<ModuleType>):FinalProgramFingerprintSnapshot {
 		final declarations:Array<FinalProgramDeclarationFingerprint> = [];
@@ -260,7 +265,7 @@ private class FinalProgramFingerprintBuilder {
 		result.addBool("final", field.isFinal);
 		result.addBool("abstract", field.isAbstract);
 		result.add("parameters", typeParametersRevision(field.params));
-		result.add("metadata", metadataRevision(field.meta.get()));
+		result.add("metadata", metadataRevision(field.meta.get(), field == compilerMainField ? field.pos : null));
 		result.add("kind", fieldKindRevision(field.kind));
 		result.add("body", bodyRevision);
 		result.add("position", positionRevision(field.pos, owner + "." + field.name));
@@ -289,7 +294,7 @@ private class FinalProgramFingerprintBuilder {
 		result.addBool("final", field.isFinal);
 		result.addBool("abstract", field.isAbstract);
 		result.add("parameters", typeParametersRevision(field.params));
-		result.add("metadata", metadataRevision(field.meta.get()));
+		result.add("metadata", metadataRevision(field.meta.get(), field == compilerMainField ? field.pos : null));
 		result.add("kind", fieldKindRevision(field.kind));
 		result.add("body", bodyRevision(field));
 		return result.digest();
@@ -317,9 +322,11 @@ private class FinalProgramFingerprintBuilder {
 		return result.digest();
 	}
 
-	function metadataRevision(metadata:Metadata):String {
+	function metadataRevision(metadata:Metadata, compilerMainPosition:Null<Position> = null):String {
 		final result = new CanonicalFingerprint("reflaxe-metadata-v1");
 		for (entry in metadata) {
+			if (compilerMainPosition != null && isCompilerOwnedMainKeep(entry, compilerMainPosition))
+				continue;
 			result.add("name", entry.name);
 			for (parameter in entry.params)
 				result.add("parameter", ExprTools.toString(parameter));
@@ -327,6 +334,56 @@ private class FinalProgramFingerprintBuilder {
 		}
 		return result.digest();
 	}
+
+	/**
+		Finds the exact field called by Haxe's generated main expression.
+
+		Haxe 4.3.7 adds a zero-width `@:keep` to this field during every
+		finalization. Cached server requests can therefore expose duplicate
+		compiler-owned entries even though source, typing, and output are
+		unchanged. The field identity lets metadata normalization ignore only
+		that host marker instead of ignoring user-authored `@:keep` generally.
+	**/
+	function findCompilerMainField():Null<ClassField> {
+		final mainExpression = Context.getMainExpr();
+		if (mainExpression == null)
+			return null;
+		var result:Null<ClassField> = null;
+		function visit(expression:TypedExpr):Void {
+			if (result != null)
+				return;
+			switch (expression.expr) {
+				case TField(_, access):
+					switch (access) {
+						case FStatic(_, field) if (field.get().name == "main"):
+							result = field.get();
+						case _:
+					}
+				case _:
+			}
+			if (result == null)
+				TypedExprTools.iter(expression, visit);
+		}
+		visit(mainExpression);
+		return result;
+	}
+
+	function isCompilerOwnedMainKeep(entry:MetadataEntry, mainPosition:Position):Bool {
+		if (entry.name != ":keep" || entry.params.length != 0)
+			return false;
+		try {
+			final entryPosition = Context.getPosInfos(entry.pos);
+			final fieldPosition = Context.getPosInfos(mainPosition);
+			return entryPosition.min == entryPosition.max
+				&& entryPosition.min == fieldPosition.min
+				&& normalizedFile(entryPosition.file) == normalizedFile(fieldPosition.file);
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	inline function normalizedFile(file:Null<String>):String
+		return StringTools.replace(file ?? "", "\\", "/");
 
 	function classKindRevision(kind:ClassKind):String {
 		return switch (kind) {
