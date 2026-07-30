@@ -450,6 +450,10 @@ abstract class BaseCompiler {
 	public var targetReuseProbe(default, null): Null<TargetReuseProbe>;
 	/** Time spent building the final fingerprint and exact target request key. **/
 	public var finalProgramFingerprintAndKeyMilliseconds(default, null): Null<Int>;
+	/** Complete post-fingerprint target lifecycle time for the current request. **/
+	public var targetReuseLifecycleMilliseconds(default, null): Null<Int>;
+	/** Time spent publishing the current request's private output candidate. **/
+	public var outputPublicationMilliseconds(default, null): Int = 0;
 	/** Process-local evidence for the bounded macro-realm catalog owner. **/
 	public var targetReuseCatalogRealm(default, null): Null<TargetReuseCatalogRealmObservation>;
 	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
@@ -480,6 +484,8 @@ abstract class BaseCompiler {
 	final public function beginFinalProgramFingerprint(snapshot: FinalProgramFingerprintSnapshot, frameworkBlockers: Array<String>): Void {
 		programRevision = null;
 		finalProgramFingerprintAndKeyMilliseconds = null;
+		targetReuseLifecycleMilliseconds = null;
+		outputPublicationMilliseconds = 0;
 		finalProgramFingerprint = snapshot;
 		targetReuseCatalogRealm = TargetReuseCatalog.beginSharedRequest();
 		final blockers = frameworkBlockers.copy();
@@ -498,6 +504,24 @@ abstract class BaseCompiler {
 			throw "Final-program fingerprint timing must not be negative.";
 		}
 		finalProgramFingerprintAndKeyMilliseconds = value;
+	}
+
+	/**
+		Records the complete target lifecycle after the final request key exists.
+
+		This duration includes either the ordinary compiler or exact replay plus
+		source publication and post-publication target work. Hosts record it
+		immediately before the target's request-finish hook so a target can emit
+		one honest miss-or-hit phase receipt without owning host orchestration.
+	**/
+	final public function recordTargetReuseLifecycleMilliseconds(value: Int): Void {
+		if(finalProgramFingerprint == null || targetReuseProbe == null) {
+			throw "Cannot record target lifecycle timing before the target reuse probe is sealed.";
+		}
+		if(value < 0) {
+			throw "Target lifecycle timing must not be negative.";
+		}
+		targetReuseLifecycleMilliseconds = value;
 	}
 
 	/**
@@ -603,7 +627,10 @@ abstract class BaseCompiler {
 	/** Publishes the validated candidate after `onOutputComplete` succeeds. **/
 	public function commitOutputTransaction(): Void {
 		if(output != null) {
+			final started = haxe.Timer.stamp();
 			output.commitOutputTransaction();
+			final elapsed = Std.int((haxe.Timer.stamp() - started) * 1000.0);
+			outputPublicationMilliseconds += elapsed < 0 ? 0 : elapsed;
 		}
 	}
 

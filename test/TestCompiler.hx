@@ -243,6 +243,10 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override public function finishTargetReuseRequest(outcome:TargetReuseRequestOutcome):Void {
+		if(Context.defined("reflaxe_target_reuse_fixture")
+			&& (targetReuseLifecycleMilliseconds == null || outputPublicationMilliseconds < 0)) {
+			Context.fatalError("Target reuse finish ran without complete non-negative lifecycle and publication timing.", Context.currentPos());
+		}
 		switch(outcome) {
 			case CompiledMiss:
 				final probe = targetReuseProbe;

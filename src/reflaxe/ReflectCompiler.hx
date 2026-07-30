@@ -232,6 +232,7 @@ class ReflectCompiler {
 		final fingerprintMilliseconds = Std.int((haxe.Timer.stamp() - fingerprintStarted) * 1000.0);
 		compiler.recordFinalProgramFingerprintAndKeyMilliseconds(fingerprintMilliseconds < 0 ? 0 : fingerprintMilliseconds);
 
+		final targetLifecycleStarted = haxe.Timer.stamp();
 		var targetReuseHit = false;
 		try {
 			targetReuseHit = tryPublishTargetReuseHit(compiler);
@@ -243,12 +244,18 @@ class ReflectCompiler {
 			// rolled back safely after its commit point.
 			compiler.onOutputPublished();
 		} catch(cause: Dynamic) {
+			compiler.recordTargetReuseLifecycleMilliseconds(elapsedMilliseconds(targetLifecycleStarted));
 			compiler.finishTargetReuseRequest(TargetReuseRequestOutcome.Failed);
 			throw cause;
 		}
+		compiler.recordTargetReuseLifecycleMilliseconds(elapsedMilliseconds(targetLifecycleStarted));
 		compiler.finishTargetReuseRequest(
 			targetReuseHit ? TargetReuseRequestOutcome.ExactHit : TargetReuseRequestOutcome.CompiledMiss
 		);
+	}
+
+	static inline function elapsedMilliseconds(started: Float): Int {
+		return Std.int(Math.max(0, (haxe.Timer.stamp() - started) * 1000.0));
 	}
 
 	/**
