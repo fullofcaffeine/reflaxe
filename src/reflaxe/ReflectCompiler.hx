@@ -223,6 +223,9 @@ class ReflectCompiler {
 		final moduleTypes = applyModuleFilters(moduleTypes);
 		final finalProgramFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes(moduleTypes);
 		final frameworkBlockers = initCallbacks == null ? [] : ["reflaxe:unrevisioned-compile-begin-callback"];
+		if(Context.defined("no-macro-cache")) {
+			frameworkBlockers.push("reflaxe:no-macro-cache");
+		}
 		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);
 		compiler.prepareFinalProgram(moduleTypes, finalProgramFingerprint);
 		compiler.beginProgramRevision(finalProgramFingerprint.programRevision);
