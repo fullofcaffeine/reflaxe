@@ -85,11 +85,11 @@ private class FinalProgramFingerprintBuilder {
 	final sourceAuthorityBlockers:Array<String> = [];
 	final compatibilityEntries:Array<String> = ["program-revision-schema|2"];
 	final bodyRevisionByField:ObjectMap<ClassField, String> = new ObjectMap();
-	final compilerMainField:Null<ClassField>;
+	final compilerMainPosition:Null<Position>;
 	var functionCount = 0;
 
 	public function new() {
-		compilerMainField = findCompilerMainField();
+		compilerMainPosition = findCompilerMainPosition();
 	}
 
 	public function build(moduleTypes:Array<ModuleType>):FinalProgramFingerprintSnapshot {
@@ -265,7 +265,7 @@ private class FinalProgramFingerprintBuilder {
 		result.addBool("final", field.isFinal);
 		result.addBool("abstract", field.isAbstract);
 		result.add("parameters", typeParametersRevision(field.params));
-		result.add("metadata", metadataRevision(field.meta.get(), field == compilerMainField ? field.pos : null));
+		result.add("metadata", metadataRevision(field.meta.get(), isCompilerMainField(field) ? field.pos : null));
 		result.add("kind", fieldKindRevision(field.kind));
 		result.add("body", bodyRevision);
 		result.add("position", positionRevision(field.pos, owner + "." + field.name));
@@ -294,7 +294,7 @@ private class FinalProgramFingerprintBuilder {
 		result.addBool("final", field.isFinal);
 		result.addBool("abstract", field.isAbstract);
 		result.add("parameters", typeParametersRevision(field.params));
-		result.add("metadata", metadataRevision(field.meta.get(), field == compilerMainField ? field.pos : null));
+		result.add("metadata", metadataRevision(field.meta.get(), isCompilerMainField(field) ? field.pos : null));
 		result.add("kind", fieldKindRevision(field.kind));
 		result.add("body", bodyRevision(field));
 		return result.digest();
@@ -344,11 +344,11 @@ private class FinalProgramFingerprintBuilder {
 		unchanged. The field identity lets metadata normalization ignore only
 		that host marker instead of ignoring user-authored `@:keep` generally.
 	**/
-	function findCompilerMainField():Null<ClassField> {
+	function findCompilerMainPosition():Null<Position> {
 		final mainExpression = Context.getMainExpr();
 		if (mainExpression == null)
 			return null;
-		var result:Null<ClassField> = null;
+		var result:Null<Position> = null;
 		function visit(expression:TypedExpr):Void {
 			if (result != null)
 				return;
@@ -356,7 +356,7 @@ private class FinalProgramFingerprintBuilder {
 				case TField(_, access):
 					switch (access) {
 						case FStatic(_, field) if (field.get().name == "main"):
-							result = field.get();
+							result = field.get().pos;
 						case _:
 					}
 				case _:
@@ -366,6 +366,20 @@ private class FinalProgramFingerprintBuilder {
 		}
 		visit(mainExpression);
 		return result;
+	}
+
+	function isCompilerMainField(field:ClassField):Bool {
+		if (field.name != "main" || compilerMainPosition == null)
+			return false;
+		try {
+			final candidate = Context.getPosInfos(field.pos);
+			final expected = Context.getPosInfos(compilerMainPosition);
+			return candidate.min == expected.min
+				&& candidate.max == expected.max
+				&& normalizedFile(candidate.file) == normalizedFile(expected.file);
+		} catch (_:Dynamic) {
+			return false;
+		}
 	}
 
 	function isCompilerOwnedMainKeep(entry:MetadataEntry, mainPosition:Position):Bool {
