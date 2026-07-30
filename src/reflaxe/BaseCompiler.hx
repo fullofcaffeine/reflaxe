@@ -21,6 +21,8 @@ import reflaxe.lifecycle.ProgramRevision;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleOptions;
 import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
+import reflaxe.lifecycle.TargetReuseCatalog;
+import reflaxe.lifecycle.TargetReuseCatalog.TargetReuseCatalogRealmObservation;
 import reflaxe.lifecycle.TargetReuseProbe;
 import reflaxe.lifecycle.TargetReuseRevisionComponent;
 
@@ -445,6 +447,8 @@ abstract class BaseCompiler {
 	public var programRevision(default, null): Null<ProgramRevision>;
 	public var finalProgramFingerprint(default, null): Null<FinalProgramFingerprintSnapshot>;
 	public var targetReuseProbe(default, null): Null<TargetReuseProbe>;
+	/** Process-local evidence for the bounded macro-realm catalog owner. **/
+	public var targetReuseCatalogRealm(default, null): Null<TargetReuseCatalogRealmObservation>;
 	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
 
 	public function setOptions(options: BaseCompilerOptions) {
@@ -472,6 +476,7 @@ abstract class BaseCompiler {
 	**/
 	final public function beginFinalProgramFingerprint(snapshot: FinalProgramFingerprintSnapshot, frameworkBlockers: Array<String>): Void {
 		finalProgramFingerprint = snapshot;
+		targetReuseCatalogRealm = TargetReuseCatalog.beginSharedRequest();
 		final blockers = frameworkBlockers.copy();
 		for(blocker in targetReuseBlockers(snapshot)) {
 			blockers.push(blocker);
