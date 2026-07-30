@@ -3,7 +3,6 @@ package reflaxe.lifecycle;
 #if (macro || reflaxe_runtime)
 import haxe.crypto.Sha256;
 import haxe.ds.ObjectMap;
-import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Expr.Metadata;
 import haxe.macro.Expr.MetadataEntry;
@@ -14,6 +13,7 @@ import haxe.macro.Type.ModuleType;
 import haxe.macro.Type.TypeParameter;
 import haxe.macro.Type.TypedExpr;
 import haxe.macro.TypedExprTools;
+import reflaxe.helpers.Context;
 import sys.FileSystem;
 import sys.io.File;
 
@@ -328,7 +328,7 @@ private class FinalProgramFingerprintBuilder {
 			if (compilerMainPosition != null && isCompilerOwnedMainKeep(entry, compilerMainPosition))
 				continue;
 			result.add("name", entry.name);
-			for (parameter in entry.params)
+			for (parameter in entry.params ?? [])
 				result.add("parameter", ExprTools.toString(parameter));
 			result.add("position", positionRevision(entry.pos, entry.name));
 		}
@@ -383,7 +383,7 @@ private class FinalProgramFingerprintBuilder {
 	}
 
 	function isCompilerOwnedMainKeep(entry:MetadataEntry, mainPosition:Position):Bool {
-		if (entry.name != ":keep" || entry.params.length != 0)
+		if (entry.name != ":keep" || (entry.params ?? []).length != 0)
 			return false;
 		try {
 			final entryPosition = Context.getPosInfos(entry.pos);

@@ -363,10 +363,22 @@ class SemanticLifecycleTest {
 		capture.replace(completeTypes);
 		completeTypes.resize(0);
 		final captured = capture.take();
-		if (captured.length != 2
-			|| captured[0].getUniqueId() != first.getUniqueId()
-			|| captured[1].getUniqueId() != second.getUniqueId()) {
+		final expectedCrossModuleOrder = [first, second];
+		expectedCrossModuleOrder.sort((left, right) -> Reflect.compare(left.getCommonData().module, right.getCommonData().module));
+		if (captured.length != expectedCrossModuleOrder.length) {
 			Context.fatalError("the complete onGenerate view did not replace a stale partial request defensively", Context.currentPos());
+		}
+		for (index in 0...expectedCrossModuleOrder.length) {
+			if (captured[index].getUniqueId() != expectedCrossModuleOrder[index].getUniqueId()) {
+				Context.fatalError("the complete onGenerate view did not normalize cross-module traversal order", Context.currentPos());
+			}
+		}
+		capture.replace([secondType, firstType]);
+		final reversedModules = capture.take();
+		for (index in 0...expectedCrossModuleOrder.length) {
+			if (reversedModules[index].getUniqueId() != expectedCrossModuleOrder[index].getUniqueId()) {
+				Context.fatalError("cross-module normalization changed with the host callback traversal order", Context.currentPos());
+			}
 		}
 		final sourceOrderedTypes = Context.getModule("SameModuleOrder");
 		final sourceOrdered = sourceOrderedTypes.map(typeAsModuleType);
@@ -380,6 +392,35 @@ class SemanticLifecycleTest {
 		for (index in 0...sourceOrdered.length) {
 			if (normalized[index].getUniqueId() != sourceOrdered[index].getUniqueId()) {
 				Context.fatalError("the complete onGenerate view did not preserve same-module source declaration order", Context.currentPos());
+			}
+		}
+		final sameSpanTypes = Context.getModule("SameSpanOrder");
+		final sameSpanExpected = sameSpanTypes.map(typeAsModuleType);
+		if (sameSpanExpected.length < 2) {
+			Context.fatalError("the same-span fixture did not produce its abstract and implementation declarations", Context.currentPos());
+		}
+		final firstSameSpanPosition = Context.getPosInfos(sameSpanExpected[0].getCommonData().pos);
+		for (declaration in sameSpanExpected) {
+			final position = Context.getPosInfos(declaration.getCommonData().pos);
+			if (position.min != firstSameSpanPosition.min || position.max != firstSameSpanPosition.max) {
+				Context.fatalError("the same-span fixture declarations no longer share one source position", Context.currentPos());
+			}
+		}
+		sameSpanExpected.sort((left, right) -> Reflect.compare(left.getUniqueId(), right.getUniqueId()));
+		capture.replace(sameSpanTypes);
+		final sameSpanOriginal = capture.take();
+		for (index in 0...sameSpanExpected.length) {
+			if (sameSpanOriginal[index].getUniqueId() != sameSpanExpected[index].getUniqueId()) {
+				Context.fatalError("same-span normalization did not use stable declaration identity", Context.currentPos());
+			}
+		}
+		final sameSpanReversed = sameSpanTypes.copy();
+		sameSpanReversed.reverse();
+		capture.replace(sameSpanReversed);
+		final sameSpanNormalized = capture.take();
+		for (index in 0...sameSpanExpected.length) {
+			if (sameSpanNormalized[index].getUniqueId() != sameSpanExpected[index].getUniqueId()) {
+				Context.fatalError("same-span normalization depended on the host callback traversal order", Context.currentPos());
 			}
 		}
 		final missing = expectLifecycleError(() -> capture.take());

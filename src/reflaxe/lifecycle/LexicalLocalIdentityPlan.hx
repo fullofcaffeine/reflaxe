@@ -80,6 +80,8 @@ class LexicalLocalIdentityPlan {
 			return false;
 		for (index in ID_PREFIX.length...value.length) {
 			final code = value.charCodeAt(index);
+			if (code == null)
+				return false;
 			final isDigit = code >= 48 && code <= 57;
 			final isLowerHex = code >= 97 && code <= 102;
 			if (!isDigit && !isLowerHex)

@@ -314,16 +314,26 @@ abstract class BaseCompiler {
 	// =======================================================
 
 	/**
-		A function intended to be overriden by your compiler class.
+		Lets a target choose which typed declarations it will generate.
 
-		This is called once at the start of compilation.
+		Reflaxe calls this once before target-specific preparation begins. The input
+		contains every declaration supplied by Haxe, including declarations that
+		share one source module.
 
-		`moduleTypes` is an array of ALL types supplied by the Haxe
-		compiler. Removing (or adding?) entries from this will
-		change what modules are sent to your compiler.
+		The input order is deterministic: source modules are sorted by their stable
+		Haxe module name, and declarations from one module are sorted by source
+		position with stable declaration identity as a tie-breaker. Haxe's internal
+		callback traversal order is deliberately not exposed because it can change
+		between cold and warm compilation-server requests for the same program.
+
+		This order is not a dependency or inheritance order. A target that needs
+		dependencies before their consumers must derive that relationship from the
+		typed declarations instead of relying on array position.
 
 		`moduleTypes` is a unique copy made specifically for this
-		function, so it is safe to modify directly and return it.
+		function, so it is safe to modify directly and return it. Removing an entry
+		prevents that declaration from reaching later target phases. Added entries
+		must still be valid declarations from the current compiler request.
 
 		To enable the exact behavior supplied by the deprecated
 		`smartDCE` option, the following code can be used:

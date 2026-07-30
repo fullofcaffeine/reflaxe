@@ -225,7 +225,7 @@ class ReflectCompiler {
 		final fingerprintStarted = haxe.Timer.stamp();
 		final finalProgramFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes(moduleTypes);
 		final frameworkBlockers = initCallbacks == null ? [] : ["reflaxe:unrevisioned-compile-begin-callback"];
-		if(Context.defined("no-macro-cache")) {
+		if(#if eval Context.defined("no-macro-cache") #else false #end) {
 			frameworkBlockers.push("reflaxe:no-macro-cache");
 		}
 		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);

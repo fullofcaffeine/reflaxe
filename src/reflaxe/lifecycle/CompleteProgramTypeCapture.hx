@@ -1,9 +1,9 @@
 package reflaxe.lifecycle;
 
 #if (macro || reflaxe_runtime)
-import haxe.macro.Context;
 import haxe.macro.Type;
 import haxe.macro.Type.ModuleType;
+import reflaxe.helpers.Context;
 
 using reflaxe.helpers.ModuleTypeHelper;
 
@@ -12,10 +12,12 @@ using reflaxe.helpers.ModuleTypeHelper;
 
 	`Context.onGenerate` exposes declarations as `Type` values even though Reflaxe
 	compilers consume `ModuleType` declarations. `replace` performs that narrow
-	conversion, rejects malformed or duplicate declarations, and supersedes any
-	unconsumed capture left by a failed earlier request. `take` consumes the
-	current request exactly once so mutable host references cannot silently leak
-	into a later target run.
+	conversion, rejects malformed or duplicate declarations, and gives every
+	unchanged program the same target order even when Haxe's compilation server
+	traverses modules differently. `replace` also supersedes any unconsumed
+	capture left by a failed earlier request. `take` consumes the current request
+	exactly once so mutable host references cannot silently leak into a later
+	target run.
 **/
 class CompleteProgramTypeCapture {
 	var captured:Null<Array<ModuleType>>;
@@ -70,47 +72,61 @@ class CompleteProgramTypeCapture {
 	}
 
 	/**
-		Restores source declaration order inside each Haxe module.
+		Builds one deterministic target input from Haxe's complete declaration set.
 
-		Haxe's complete `onGenerate` view can present secondary declarations in a
-		different order from the earlier typed-module callback. Target backends may
-		use same-module order to place type-dependent storage safely, so the
-		complete-program cut must not silently change that behavior. The first
-		appearance of each module still owns cross-module order; only declarations
-		from that same source module are normalized.
+		Haxe's compilation server can return the same source modules in a different
+		cross-module traversal order on a later unchanged request. That traversal
+		order is compiler bookkeeping, not source-program behavior. Letting it
+		reach a target would make identical programs produce different reuse keys
+		and could also let target output depend on whether the compiler process was
+		cold or warm.
+
+		Modules are therefore ordered by their stable Haxe module name. Declarations
+		from one source module retain source-position order because targets can use
+		that order for initialization and storage decisions. When position data
+		cannot distinguish two declarations, their stable declaration identity—the
+		declaration kind plus its fully qualified Haxe name—breaks the tie instead
+		of the host callback index.
 	**/
 	static function orderDeclarations(declarations:Array<ModuleType>):Array<ModuleType> {
 		final moduleOrder:Array<String> = [];
 		final byModule:Map<String, Array<{
 			declaration:ModuleType,
+			identity:String,
 			min:Int,
-			max:Int,
-			hostIndex:Int
+			max:Int
 		}>> = [];
-		for (hostIndex => declaration in declarations) {
+		for (declaration in declarations) {
 			final common = declaration.getCommonData();
-			if (!byModule.exists(common.module)) {
-				byModule.set(common.module, []);
+			var moduleDeclarations = byModule[common.module];
+			if (moduleDeclarations == null) {
+				moduleDeclarations = [];
+				byModule.set(common.module, moduleDeclarations);
 				moduleOrder.push(common.module);
 			}
 			final position = Context.getPosInfos(common.pos);
-			byModule[common.module].push({
+			moduleDeclarations.push({
 				declaration: declaration,
+				identity: declaration.getUniqueId(),
 				min: position.min,
-				max: position.max,
-				hostIndex: hostIndex
+				max: position.max
 			});
 		}
+		moduleOrder.sort(Reflect.compare);
 
 		final ordered:Array<ModuleType> = [];
 		for (moduleId in moduleOrder) {
 			final entries = byModule[moduleId];
+			if (entries == null) {
+				throw new SemanticLifecycleError("reflaxe:missing-complete-program-module",
+					'The normalized complete program lost declarations for module "$moduleId".');
+			}
 			entries.sort((left, right) -> {
 				if (left.min != right.min)
 					return left.min - right.min;
 				if (left.max != right.max)
 					return left.max - right.max;
-				return left.hostIndex - right.hostIndex;
+				return Reflect.compare(left.identity, right.identity);
 			});
 			for (entry in entries)
 				ordered.push(entry.declaration);
