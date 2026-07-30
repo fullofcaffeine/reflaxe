@@ -1,7 +1,9 @@
 #if macro
 import haxe.macro.Context;
 import haxe.macro.Expr.MetadataEntry;
+import haxe.macro.ExprTools;
 import haxe.macro.Type.ClassType;
+import haxe.macro.Type.MetaAccess;
 import haxe.macro.Type.ModuleType;
 import haxe.macro.Type.TypedExpr;
 import haxe.macro.TypedExprTools;
@@ -54,6 +56,7 @@ class SemanticLifecycleTest {
 	static function execute():Void {
 		assertCompleteProgramCaptureOwnsTargetInput();
 		assertFinalProgramFingerprintOwnsOrderedPlainFacts();
+		assertCompleteProgramCaptureNormalizesCompilerReachabilityOrder();
 		assertTargetReuseProbeFailsClosed();
 		assertDirectoryOutputTransactionRollsBack();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
@@ -494,6 +497,179 @@ class SemanticLifecycleTest {
 		if (firstEncoding.digest() == secondEncoding.digest()) {
 			Context.fatalError("canonical fingerprint encoding admitted a delimiter collision", Context.currentPos());
 		}
+	}
+
+	/**
+		Proves cold and warm requests expose the same metadata to a target.
+
+		Haxe's server can reverse its empty `@:used` and `@:directlyUsed`
+		reachability flags on a cached declaration. The complete-program capture
+		must reorder the actual metadata before either the target or fingerprint
+		reads it. This fixture also proves source annotations, parameterized
+		entries, near-match positions, and unknown files keep their original
+		slots because they are not proven compiler bookkeeping.
+	**/
+	static function assertCompleteProgramCaptureNormalizesCompilerReachabilityOrder():Void {
+		final declaration = moduleType("CompilerReachabilityMetadata");
+		var common = declaration.getCommonData();
+		final original = common.meta.get();
+		final originalRevision = metadataRevisionForTest(original);
+		final sourceMarkers = original.filter(entry -> entry.name == ":used" || entry.name == ":directlyUsed");
+		if (sourceMarkers.length != 2)
+			Context.fatalError("the reachability fixture did not retain both source-written metadata entries", Context.currentPos());
+		final declarationPosition = Context.getPosInfos(common.pos);
+		final compilerUsedPosition = Context.makePosition({
+			file: declarationPosition.file,
+			min: declarationPosition.min,
+			max: declarationPosition.min
+		});
+		final capture = new CompleteProgramTypeCapture();
+		var failure:Dynamic = null;
+		try {
+			addUncertainReachabilityMetadata(common.meta, common.pos);
+			common.meta.add(":used", [], compilerUsedPosition);
+			common.meta.add(":used", [], compilerUsedPosition);
+			common.meta.add(":directlyUsed", [], common.pos);
+			final coldBefore = common.meta.get();
+			capture.replace([moduleTypeAsType(declaration)]);
+			capture.take();
+			// A target reads a fresh declaration view after capture. Reusing the
+			// earlier MetaAccess wrapper here would inspect its old metadata
+			// snapshot instead of the normalized declaration that targets receive.
+			common = declaration.getCommonData();
+			final coldVisible = common.meta.get();
+			assertUnmatchedMetadataSlotsUnchanged(coldBefore, coldVisible, common.pos);
+			assertCompilerMarkerOrder("cold", coldVisible, common.pos);
+			final coldFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes([declaration]).id;
+
+			replaceTestMetadata(common.meta, original);
+			addUncertainReachabilityMetadata(common.meta, common.pos);
+			common.meta.add(":used", [], compilerUsedPosition);
+			common.meta.add(":directlyUsed", [], common.pos);
+			common.meta.add(":used", [], compilerUsedPosition);
+			final warmBefore = common.meta.get();
+			capture.replace([moduleTypeAsType(declaration)]);
+			capture.take();
+			common = declaration.getCommonData();
+			final warmVisible = common.meta.get();
+			assertUnmatchedMetadataSlotsUnchanged(warmBefore, warmVisible, common.pos);
+			assertCompilerMarkerOrder("warm", warmVisible, common.pos);
+			final warmFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes([declaration]).id;
+			if (metadataRevisionForTest(warmVisible) != metadataRevisionForTest(coldVisible) || warmFingerprint != coldFingerprint) {
+				Context.fatalError("cold and warm reachability order did not normalize to one target-visible program", Context.currentPos());
+			}
+
+			capture.replace([moduleTypeAsType(declaration)]);
+			capture.take();
+			common = declaration.getCommonData();
+			if (metadataRevisionForTest(common.meta.get()) != metadataRevisionForTest(warmVisible)) {
+				Context.fatalError("reachability metadata normalization was not idempotent", Context.currentPos());
+			}
+		} catch (cause:Dynamic) {
+			failure = cause;
+		}
+
+		common = declaration.getCommonData();
+		replaceTestMetadata(common.meta, original);
+		if (metadataRevisionForTest(common.meta.get()) != originalRevision) {
+			Context.fatalError("the reachability-order fixture did not restore its source metadata", Context.currentPos());
+		}
+		if (failure != null)
+			throw failure;
+	}
+
+	/**
+		Adds entries that resemble Haxe flags but remain target-authored input.
+
+		Each entry differs from Haxe's compiler shape in one important way: it
+		has an argument, ends before the declaration, or uses an unknown file.
+		They make the test reject an overly broad normalization rule.
+	**/
+	static function addUncertainReachabilityMetadata(access:MetaAccess, ownerPosition:haxe.macro.Expr.Position):Void {
+		final owner = Context.getPosInfos(ownerPosition);
+		access.add(":used", [macro "parameterized"], ownerPosition);
+		access.add(":directlyUsed", [], Context.makePosition({
+			file: owner.file,
+			min: owner.min,
+			max: owner.max > owner.min ? owner.max - 1 : owner.max + 1
+		}));
+		access.add(":used", [], Context.makePosition({
+			file: "?",
+			min: owner.min,
+			max: owner.min
+		}));
+	}
+
+	/** Proves every entry outside the matched compiler slots stayed in place. **/
+	static function assertUnmatchedMetadataSlotsUnchanged(before:Array<MetadataEntry>, after:Array<MetadataEntry>,
+			ownerPosition:haxe.macro.Expr.Position):Void {
+		if (before.length != after.length)
+			Context.fatalError("reachability metadata normalization added or removed an entry", Context.currentPos());
+		for (index in 0...before.length) {
+			if (!isCompilerMarkerForTest(before[index], ownerPosition)
+				&& metadataEntryRevisionForTest(before[index]) != metadataEntryRevisionForTest(after[index])) {
+				Context.fatalError("reachability metadata normalization moved target-authored metadata", Context.currentPos());
+			}
+		}
+	}
+
+	/**
+		Proves one direct flag precedes both retained used-flag duplicates.
+
+		The phase name identifies whether a failure came from the fresh or
+		reused compiler view; it does not change the ordering rule.
+	**/
+	static function assertCompilerMarkerOrder(phase:String, metadata:Array<MetadataEntry>, ownerPosition:haxe.macro.Expr.Position):Void {
+		final names = metadata.filter(entry -> isCompilerMarkerForTest(entry, ownerPosition)).map(entry -> entry.name);
+		if (names.join("|") != ":directlyUsed|:used|:used") {
+			Context.fatalError('$phase compiler reachability flags were not retained in their deterministic order: ${names.join("|")}', Context.currentPos());
+		}
+	}
+
+	static function isCompilerMarkerForTest(entry:MetadataEntry, ownerPosition:haxe.macro.Expr.Position):Bool {
+		if ((entry.name != ":used" && entry.name != ":directlyUsed") || (entry.params ?? []).length != 0)
+			return false;
+		final marker = Context.getPosInfos(entry.pos);
+		final owner = Context.getPosInfos(ownerPosition);
+		if (StringTools.replace(marker.file ?? "", "\\", "/") != StringTools.replace(owner.file ?? "", "\\", "/"))
+			return false;
+		return switch (entry.name) {
+			case ":used": marker.min == marker.max && marker.min == owner.min;
+			case ":directlyUsed": marker.min == owner.min && marker.max == owner.max;
+			case _: false;
+		}
+	}
+
+	/** Recreates the exact metadata order saved at the start of the fixture. **/
+	static function replaceTestMetadata(access:MetaAccess, metadata:Array<MetadataEntry>):Void {
+		final currentNames:Map<String, Bool> = [];
+		for (entry in access.get()) {
+			if (!currentNames.exists(entry.name)) {
+				currentNames.set(entry.name, true);
+				access.remove(entry.name);
+			}
+		}
+		var index = metadata.length;
+		while (index > 0) {
+			index -= 1;
+			final entry = metadata[index];
+			access.add(entry.name, entry.params ?? [], entry.pos);
+		}
+	}
+
+	static function metadataRevisionForTest(metadata:Array<MetadataEntry>):String {
+		return haxe.Json.stringify(metadata.map(metadataEntryRevisionForTest));
+	}
+
+	static function metadataEntryRevisionForTest(entry:MetadataEntry):String {
+		final position = Context.getPosInfos(entry.pos);
+		return haxe.Json.stringify({
+			name: entry.name,
+			parameters: (entry.params ?? []).map(ExprTools.toString),
+			file: StringTools.replace(position.file ?? "", "\\", "/"),
+			minimum: position.min,
+			maximum: position.max
+		});
 	}
 
 	/** Proves exact target keys are order-stable and eligibility fails closed. **/

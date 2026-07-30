@@ -48,6 +48,12 @@ class CompleteProgramTypeCapture {
 
 	/**
 		Consumes the current complete program and clears all retained references.
+
+		Haxe has finished its built-in generation before Reflaxe calls `take`, so
+		the captured declarations now contain the reachability flags that targets
+		can inspect. Their compiler-server order is normalized on the same objects
+		before they are returned. The target and its fingerprint therefore read
+		one identical input rather than normalizing only the cache key.
 	**/
 	public function take():Array<ModuleType> {
 		final current = captured;
@@ -56,6 +62,7 @@ class CompleteProgramTypeCapture {
 				"Haxe did not provide a complete onGenerate declaration view for this target request.");
 		}
 		captured = null;
+		CompilerReachabilityMetadataOrder.normalizeProgram(current);
 		return current.copy();
 	}
 
