@@ -11,6 +11,8 @@ import reflaxe.data.ClassFuncData;
 import reflaxe.helpers.ClassFieldHelper;
 import reflaxe.lifecycle.CompleteProgramTypeCapture;
 import reflaxe.lifecycle.FunctionBodyRevision;
+import reflaxe.lifecycle.CanonicalFingerprint;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.LexicalLocalIdentityPlan;
 import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
@@ -21,6 +23,8 @@ import reflaxe.lifecycle.SemanticArtifactSnapshot;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleError;
 import reflaxe.lifecycle.SemanticPreprocessorAction;
+import reflaxe.lifecycle.TargetReuseProbe;
+import reflaxe.lifecycle.TargetReuseRevisionComponent;
 import reflaxe.output.DirectoryOutputTransaction;
 import reflaxe.preprocessors.BasePreprocessor;
 import reflaxe.preprocessors.ExpressionPreprocessor;
@@ -49,6 +53,8 @@ class SemanticLifecycleTest {
 
 	static function execute():Void {
 		assertCompleteProgramCaptureOwnsTargetInput();
+		assertFinalProgramFingerprintOwnsOrderedPlainFacts();
+		assertTargetReuseProbeFailsClosed();
 		assertDirectoryOutputTransactionRollsBack();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
@@ -396,6 +402,89 @@ class SemanticLifecycleTest {
 		}
 		if (ProgramRevision.fromModuleTypes([first]).id == forwardRevision.id) {
 			Context.fatalError("program revision ignored a retained module", Context.currentPos());
+		}
+	}
+
+	/**
+		Proves the richer snapshot preserves order while retaining compatibility.
+	**/
+	static function assertFinalProgramFingerprintOwnsOrderedPlainFacts():Void {
+		final first = moduleType("MyClass");
+		final second = moduleType("LazyAddedType");
+		final subject = moduleType("ProgramRevisionSubject");
+		NormalizedProgramBodyDigest.resetDigestCallCount();
+		FinalProgramFingerprintSnapshot.fromModuleTypes([subject]);
+		final expectedSubjectCalls = Context.getMainExpr() == null ? 1 : 2;
+		if (NormalizedProgramBodyDigest.getDigestCallCount() != expectedSubjectCalls) {
+			Context.fatalError("the final-program snapshot repeated a typed-body fingerprint walk", Context.currentPos());
+		}
+
+		NormalizedProgramBodyDigest.resetDigestCallCount();
+		final forward = FinalProgramFingerprintSnapshot.fromModuleTypes([first, second]);
+		final digestCalls = NormalizedProgramBodyDigest.getDigestCallCount();
+		final reverse = FinalProgramFingerprintSnapshot.fromModuleTypes([second, first]);
+		if (forward.programRevision.id != reverse.programRevision.id
+			|| forward.programMembershipRevision == reverse.programMembershipRevision
+			|| forward.id == reverse.id) {
+			Context.fatalError("the final-program snapshot lost order or changed the compatibility program revision", Context.currentPos());
+		}
+		if (digestCalls <= 0) {
+			Context.fatalError("the final-program snapshot did not observe any typed bodies", Context.currentPos());
+		}
+		final declarations = forward.declarations();
+		final originalCount = declarations.length;
+		declarations.resize(0);
+		final blockers = forward.sourceAuthorityBlockers();
+		final originalBlockerCount = blockers.length;
+		blockers.push("test-only-mutation");
+		if (forward.declarations().length != originalCount || forward.sourceAuthorityBlockers().length != originalBlockerCount) {
+			Context.fatalError("the final-program snapshot exposed mutable declaration or authority arrays", Context.currentPos());
+		}
+		if (forward.programRevision.id != ProgramRevision.fromModuleTypes([first, second]).id) {
+			Context.fatalError("the final-program snapshot diverged from the compatibility program revision", Context.currentPos());
+		}
+
+		final firstEncoding = new CanonicalFingerprint("collision-test");
+		firstEncoding.add("left", "a|b");
+		firstEncoding.add("right", "c");
+		final secondEncoding = new CanonicalFingerprint("collision-test");
+		secondEncoding.add("left", "a");
+		secondEncoding.add("right", "b|c");
+		if (firstEncoding.digest() == secondEncoding.digest()) {
+			Context.fatalError("canonical fingerprint encoding admitted a delimiter collision", Context.currentPos());
+		}
+	}
+
+	/** Proves exact target keys are order-stable and eligibility fails closed. **/
+	static function assertTargetReuseProbeFailsClosed():Void {
+		final snapshot = FinalProgramFingerprintSnapshot.fromModuleTypes([moduleType("MyClass")]);
+		final forward = TargetReuseProbe.build(snapshot, "test-target", [
+			new TargetReuseRevisionComponent("implementation", "sha256:implementation"),
+			new TargetReuseRevisionComponent("configuration", "sha256:configuration")
+		], []);
+		final reverse = TargetReuseProbe.build(snapshot, "test-target", [
+			new TargetReuseRevisionComponent("configuration", "sha256:configuration"),
+			new TargetReuseRevisionComponent("implementation", "sha256:implementation")
+		], []);
+		if (forward.requestRevision != reverse.requestRevision || forward.eligible != snapshot.sourceAuthorityComplete) {
+			Context.fatalError("target reuse key order or source-authority eligibility was unstable", Context.currentPos());
+		}
+		final blocked = TargetReuseProbe.build(snapshot, "test-target", [], ["z-reason", "a-reason", "z-reason"]);
+		if (blocked.eligible || blocked.blockers().join("|") != "a-reason|z-reason") {
+			Context.fatalError("target reuse blockers were not sorted, deduplicated, and fail-closed", Context.currentPos());
+		}
+		final unconfigured = TargetReuseProbe.build(snapshot, null, [], []);
+		if (unconfigured.eligible
+			|| unconfigured.requestRevision != null
+			|| unconfigured.blockers().indexOf("reflaxe:target-reuse-not-configured") == -1) {
+			Context.fatalError("an unconfigured target received a reusable request key", Context.currentPos());
+		}
+		final duplicateError = expectMessage(() -> TargetReuseProbe.build(snapshot, "test-target", [
+			new TargetReuseRevisionComponent("implementation", "sha256:first"),
+			new TargetReuseRevisionComponent("implementation", "sha256:second")
+		], []));
+		if (duplicateError.indexOf("supplied more than once") == -1) {
+			Context.fatalError("duplicate target reuse revision domains did not fail closed", Context.currentPos());
 		}
 	}
 

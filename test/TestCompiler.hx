@@ -29,13 +29,18 @@ using reflaxe.helpers.ClassFieldHelper;
 // This is a tool built into Reflaxe for modifying functions
 // before typing using @:build macros. 
 import reflaxe.input.ClassModifier;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.FunctionBodyRevision;
+import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.TargetReuseRevisionComponent;
 
 class TestCompiler extends reflaxe.DirectToStringCompiler {
 	/** Raw subject-body hash captured before Reflaxe assigns the program revision. **/
 	var programRevisionProbeRawSubjectBody:Null<String>;
 	/** Stable subject-body hash captured through Reflaxe's lexical identity plan. **/
 	var programRevisionProbeStableSubjectBody:Null<String>;
+	/** Snapshot seen at the miss-only preparation boundary. **/
+	var preparedFinalProgramId:Null<String>;
 	
 	// This is the initialization macro used to make the compiler work!
 	// It can be a static function in any class, but we place it in
@@ -80,6 +85,12 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override function onCompileStart() {
+		if(finalProgramFingerprint == null
+			|| targetReuseProbe == null
+			|| targetReuseProbe.requestRevision == null
+			|| preparedFinalProgramId != finalProgramFingerprint.id) {
+			Context.fatalError("The final-program fingerprint and target reuse probe were not sealed before target compilation.", Context.currentPos());
+		}
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			final revision = programRevision;
 			if(revision == null) {
@@ -103,6 +114,31 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		// Other types will be added to the compilation queue due to
 		// `addModuleTypeForCompilation` calls made while compiling the main expression.
 		setExtraFile("Main.testout", "func main():\n" + compileExpression(getMainExpr()).tab());
+	}
+
+	override public function targetReuseNamespace():Null<String> {
+		return "reflaxe-test-target";
+	}
+
+	override public function targetReuseRevisionComponents(snapshot:FinalProgramFingerprintSnapshot):Array<TargetReuseRevisionComponent> {
+		return [
+			new TargetReuseRevisionComponent("target-implementation", "reflaxe-test-target-v1"),
+			new TargetReuseRevisionComponent("output-schema", "reflaxe-test-output-v1")
+		];
+	}
+
+	override public function prepareFinalProgram(moduleTypes:Array<ModuleType>, snapshot:FinalProgramFingerprintSnapshot):Void {
+		if(finalProgramFingerprint != snapshot || targetReuseProbe == null) {
+			Context.fatalError("Target preparation ran before the final-program reuse observation was available.", Context.currentPos());
+		}
+		preparedFinalProgramId = snapshot.id;
+	}
+
+	override public function beginProgramRevision(revision:ProgramRevision):Void {
+		if(preparedFinalProgramId == null) {
+			Context.fatalError("The compatibility program revision was assigned before miss-only target preparation.", Context.currentPos());
+		}
+		super.beginProgramRevision(revision);
 	}
 
 	/**

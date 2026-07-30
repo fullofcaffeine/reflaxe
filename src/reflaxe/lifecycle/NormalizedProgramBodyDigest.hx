@@ -21,8 +21,15 @@ import haxe.macro.Type.TypedExpr;
 	distinct because their explicit structural paths differ.
 **/
 class NormalizedProgramBodyDigest {
+	#if reflaxe_lifecycle_test
+	static var digestCallCount:Int = 0;
+	#end
+
 	/** Returns the stable fingerprint for one function body. **/
 	public static function digestExpression(expression:TypedExpr, externalLocals:Array<TVar> = null):String {
+		#if reflaxe_lifecycle_test
+		digestCallCount += 1;
+		#end
 		final rendered = #if macro haxe.macro.TypedExprTools.toString(expression) #else Std.string(expression.expr) #end;
 		final localPlan = LexicalLocalIdentityPlan.build("normalized-body-digest", expression, externalLocals);
 		final normalized = normalizeLocalIds(rendered, localPlan);
@@ -34,6 +41,18 @@ class NormalizedProgramBodyDigest {
 		#end
 		return Sha256.encode(normalized.rendered);
 	}
+
+	#if reflaxe_lifecycle_test
+	/** Resets the focused counter used to reject duplicate fingerprint walks. **/
+	public static function resetDigestCallCount():Void {
+		digestCallCount = 0;
+	}
+
+	/** Returns the number of typed expressions fingerprinted since reset. **/
+	public static function getDigestCallCount():Int {
+		return digestCallCount;
+	}
+	#end
 
 	/**
 		Rewrites only IDs in Haxe's detailed `Local` and `Var` records.

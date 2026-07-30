@@ -16,10 +16,13 @@ import reflaxe.output.OutputManager;
 import reflaxe.output.OutputPath;
 import reflaxe.output.StringOrBytes;
 import reflaxe.preprocessors.ExpressionPreprocessor;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.ProgramRevision;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleOptions;
 import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
+import reflaxe.lifecycle.TargetReuseProbe;
+import reflaxe.lifecycle.TargetReuseRevisionComponent;
 
 using StringTools;
 
@@ -440,6 +443,8 @@ abstract class BaseCompiler {
 	public var options(default, null): BaseCompilerOptions = {};
 	public var expressionPreprocessors(default, null): Array<ExpressionPreprocessor> = [];
 	public var programRevision(default, null): Null<ProgramRevision>;
+	public var finalProgramFingerprint(default, null): Null<FinalProgramFingerprintSnapshot>;
+	public var targetReuseProbe(default, null): Null<TargetReuseProbe>;
 	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
 
 	public function setOptions(options: BaseCompilerOptions) {
@@ -456,6 +461,46 @@ abstract class BaseCompiler {
 	public function beginProgramRevision(revision: ProgramRevision): Void {
 		programRevision = revision;
 		semanticLifecycle?.beginProgram();
+	}
+
+	/**
+		Records final plain-value program facts before target preparation starts.
+
+		The default target is reuse-ineligible. Targets may override the namespace,
+		revision-component, and blocker methods below to produce an exact
+		observation without exposing host compiler objects.
+	**/
+	final public function beginFinalProgramFingerprint(snapshot: FinalProgramFingerprintSnapshot, frameworkBlockers: Array<String>): Void {
+		finalProgramFingerprint = snapshot;
+		final blockers = frameworkBlockers.copy();
+		for(blocker in targetReuseBlockers(snapshot)) {
+			blockers.push(blocker);
+		}
+		targetReuseProbe = TargetReuseProbe.build(snapshot, targetReuseNamespace(), targetReuseRevisionComponents(snapshot), blockers);
+	}
+
+	/**
+		Runs target work that is required only after an exact reuse miss.
+
+		The observation-only lifecycle always calls this hook. A future cache-hit
+		path may skip it only after the target's exact request key and replay
+		payload pass their independent correctness gates.
+	**/
+	public function prepareFinalProgram(moduleTypes: Array<ModuleType>, snapshot: FinalProgramFingerprintSnapshot): Void {}
+
+	/** Returns the stable target catalog namespace, or `null` to opt out. **/
+	public function targetReuseNamespace(): Null<String> {
+		return null;
+	}
+
+	/** Returns exact target-owned revision inputs without raw sensitive values. **/
+	public function targetReuseRevisionComponents(snapshot: FinalProgramFingerprintSnapshot): Array<TargetReuseRevisionComponent> {
+		return [];
+	}
+
+	/** Returns stable reasons this request must not replay target source. **/
+	public function targetReuseBlockers(snapshot: FinalProgramFingerprintSnapshot): Array<String> {
+		return [];
 	}
 
 	/** Returns deterministic lifecycle evidence without exposing mutable state. **/

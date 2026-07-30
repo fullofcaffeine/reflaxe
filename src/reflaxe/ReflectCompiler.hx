@@ -27,7 +27,7 @@ import reflaxe.data.EnumOptionData;
 import reflaxe.input.ClassHierarchyTracker;
 import reflaxe.input.ModuleUsageTracker;
 import reflaxe.lifecycle.CompleteProgramTypeCapture;
-import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.SemanticLifecycleError;
 
 using reflaxe.helpers.ArrayHelper;
@@ -221,7 +221,11 @@ class ReflectCompiler {
 
 		// Apply other type filters
 		final moduleTypes = applyModuleFilters(moduleTypes);
-		compiler.beginProgramRevision(ProgramRevision.fromModuleTypes(moduleTypes));
+		final finalProgramFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes(moduleTypes);
+		final frameworkBlockers = initCallbacks == null ? [] : ["reflaxe:unrevisioned-compile-begin-callback"];
+		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);
+		compiler.prepareFinalProgram(moduleTypes, finalProgramFingerprint);
+		compiler.beginProgramRevision(finalProgramFingerprint.programRevision);
 
 		// Start
 		callInitCallbacks(compiler);
