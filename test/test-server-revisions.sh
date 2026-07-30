@@ -9,7 +9,7 @@ PORT="${REFLAXE_TEST_SERVER_PORT:-$((20000 + $$ % 20000))}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reflaxe-server-revisions.XXXXXX")"
 SERVER_LOG="$WORK_DIR/server.log"
 SERVER_PID=""
-COMMON_ARGS=(-D reflaxe.dont_output_metadata_id -D reflaxe_program_revision_probe)
+COMMON_ARGS=(-D reflaxe.dont_output_metadata_id -D reflaxe_program_revision_probe -D reflaxe_target_reuse_fixture)
 
 cleanup() {
 	if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then

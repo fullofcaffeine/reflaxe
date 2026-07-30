@@ -29,6 +29,7 @@ import reflaxe.input.ModuleUsageTracker;
 import reflaxe.lifecycle.CompleteProgramTypeCapture;
 import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.SemanticLifecycleError;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
 
 using reflaxe.helpers.ArrayHelper;
 using reflaxe.helpers.BaseTypeHelper;
@@ -230,6 +231,62 @@ class ReflectCompiler {
 		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);
 		final fingerprintMilliseconds = Std.int((haxe.Timer.stamp() - fingerprintStarted) * 1000.0);
 		compiler.recordFinalProgramFingerprintAndKeyMilliseconds(fingerprintMilliseconds < 0 ? 0 : fingerprintMilliseconds);
+
+		var targetReuseHit = false;
+		try {
+			targetReuseHit = tryPublishTargetReuseHit(compiler);
+			if(!targetReuseHit) {
+				compileTargetMiss(compiler, moduleTypes, finalProgramFingerprint);
+			}
+			// The generated tree is now public. Keep external build or inspection
+			// work outside the candidate-abort scope because publication cannot be
+			// rolled back safely after its commit point.
+			compiler.onOutputPublished();
+		} catch(cause: Dynamic) {
+			compiler.finishTargetReuseRequest(TargetReuseRequestOutcome.Failed);
+			throw cause;
+		}
+		compiler.finishTargetReuseRequest(
+			targetReuseHit ? TargetReuseRequestOutcome.ExactHit : TargetReuseRequestOutcome.CompiledMiss
+		);
+	}
+
+	/**
+		Attempts one exact replay inside a fresh private output transaction.
+
+		A clean miss aborts that unused candidate before the ordinary target
+		compiler starts. Any thrown replay or publication error also aborts and
+		remains a request failure; the target must explicitly quarantine a corrupt
+		entry and return `false` to request a safe normal compilation.
+	**/
+	static function tryPublishTargetReuseHit(compiler: BaseCompiler): Bool {
+		final probe = compiler.targetReuseProbe;
+		if(probe == null || !probe.eligible) {
+			return false;
+		}
+		compiler.beginOutputTransaction();
+		try {
+			if(!compiler.tryReplayTargetReuse()) {
+				compiler.abortOutputTransaction();
+				return false;
+			}
+			#if reflaxe_output_transaction_test_fail_before_commit
+			throw "injected Reflaxe output transaction failure before publication";
+			#end
+			compiler.commitOutputTransaction();
+			return true;
+		} catch(cause: Dynamic) {
+			try {
+				compiler.abortOutputTransaction();
+			} catch(abortCause: Dynamic) {
+				throw new haxe.Exception('Reflaxe reuse output failed (${Std.string(cause)}), and its private candidate could not be aborted: ${Std.string(abortCause)}');
+			}
+			throw cause;
+		}
+	}
+
+	/** Runs the existing semantic target compiler and publishes one complete tree. **/
+	static function compileTargetMiss(compiler: BaseCompiler, moduleTypes: Array<ModuleType>, finalProgramFingerprint: FinalProgramFingerprintSnapshot): Void {
 		compiler.prepareFinalProgram(moduleTypes, finalProgramFingerprint);
 		compiler.beginProgramRevision(finalProgramFingerprint.programRevision);
 
@@ -269,10 +326,6 @@ class ReflectCompiler {
 			}
 			throw cause;
 		}
-		// The generated tree is now public. Keep external build or inspection
-		// work outside the candidate-abort scope because publication cannot be
-		// rolled back safely after its commit point.
-		compiler.onOutputPublished();
 	}
 
 	/** Filters types based on user-selected generation defines. **/

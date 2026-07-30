@@ -368,6 +368,58 @@ class OutputManager {
 		relative to the output folder.
 	**/
 	public function saveFile(path: String, content: StringOrBytes) {
+		final p = resolveOutputPath(path);
+		saveFileImpl(p, content);
+	}
+
+	/**
+		Writes one framework-owned file while replaying an exact complete result.
+
+		The file participates in the fresh generated-files receipt. Exact replay
+		is valid only inside a private directory transaction.
+	**/
+	public function replayFrameworkFile(path: String, content: StringOrBytes): Void {
+		requireReplayTransaction();
+		saveFile(path, content);
+	}
+
+	/**
+		Writes one target-owned replay file without claiming framework ownership.
+
+		The target must register this path in its own current artifact manifest.
+		The same transaction path validation used by ordinary output still
+		applies.
+	**/
+	public function replayTargetOwnedFile(path: String, content: StringOrBytes): Void {
+		requireReplayTransaction();
+		final p = resolveOutputPath(path);
+		if(!sys.FileSystem.exists(p) || !content.matchesFile(p)) {
+			content.save(p);
+			changed = true;
+		}
+	}
+
+	/**
+		Generates the current request's framework receipt after replay.
+
+		Call this exactly once after every framework-owned file has been replayed
+		and before target-owned manifest validation.
+	**/
+	public function finishFrameworkReplay(): Void {
+		requireReplayTransaction();
+		if(!shouldDeleteOldOutput()) {
+			throw "reflaxe:unsupported-output-replay-mode: Exact replay requires generated-file receipt ownership.";
+		}
+		recordAllOutputMetadata();
+	}
+
+	function requireReplayTransaction(): Void {
+		if(outputTransaction == null) {
+			throw "reflaxe:missing-output-replay-transaction: Exact replay requires a private directory transaction.";
+		}
+	}
+
+	function resolveOutputPath(path: String): String {
 		if(outputTransaction != null && haxe.io.Path.isAbsolute(path)) {
 			throw 'reflaxe:absolute-transaction-output-path: Transactional output path "$path" must be relative to the owned output directory.';
 		}
@@ -396,9 +448,7 @@ class OutputManager {
 		if(!sys.FileSystem.exists(dir)) {
 			sys.FileSystem.createDirectory(dir);
 		}
-
-		// Save file
-		saveFileImpl(p, content);
+		return p;
 	}
 
 	function saveFileImpl(path: String, content: StringOrBytes) {

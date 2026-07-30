@@ -9,6 +9,11 @@ import haxe.macro.Context;
 import haxe.macro.Type;
 import haxe.macro.TypedExprTools;
 import haxe.crypto.Sha256;
+import haxe.crypto.Base64;
+import haxe.io.Bytes;
+import haxe.Json;
+import haxe.io.Path;
+import sys.io.File;
 
 // Required Reflaxe types.
 import reflaxe.ReflectCompiler;
@@ -32,7 +37,21 @@ import reflaxe.input.ClassModifier;
 import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.FunctionBodyRevision;
 import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.TargetReuseCatalog;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
 import reflaxe.lifecycle.TargetReuseRevisionComponent;
+import reflaxe.output.OutputMetadataCodec;
+
+typedef TestTargetReuseFile = {
+	final path:String;
+	final contentBase64:String;
+}
+
+typedef TestTargetReusePayload = {
+	final schemaVersion:Int;
+	final targetRequestRevision:String;
+	final files:Array<TestTargetReuseFile>;
+}
 
 class TestCompiler extends reflaxe.DirectToStringCompiler {
 	/** Raw subject-body hash captured before Reflaxe assigns the program revision. **/
@@ -41,6 +60,8 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	var programRevisionProbeStableSubjectBody:Null<String>;
 	/** Snapshot seen at the miss-only preparation boundary. **/
 	var preparedFinalProgramId:Null<String>;
+	/** Immutable test-target payload staged until the complete miss succeeds. **/
+	var stagedTargetReusePayload:Null<Bytes>;
 	
 	// This is the initialization macro used to make the compiler work!
 	// It can be a static function in any class, but we place it in
@@ -127,9 +148,24 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		];
 	}
 
+	override public function targetReuseBlockers(snapshot:FinalProgramFingerprintSnapshot):Array<String> {
+		return Context.defined("reflaxe_target_reuse_fixture") ? [] : ["test-target:reuse-fixture-disabled"];
+	}
+
 	override public function prepareFinalProgram(moduleTypes:Array<ModuleType>, snapshot:FinalProgramFingerprintSnapshot):Void {
 		if(finalProgramFingerprint != snapshot || targetReuseProbe == null) {
 			Context.fatalError("Target preparation ran before the final-program reuse observation was available.", Context.currentPos());
+		}
+		if(Context.defined("reflaxe_target_reuse_fixture")) {
+			final requestRevision = targetReuseProbe.requestRevision;
+			if(requestRevision == null) {
+				Context.fatalError("Target reuse fixture has no exact request revision.", Context.currentPos());
+			}
+			final unexpectedLease = TargetReuseCatalog.shared().lookup(targetReuseNamespace(), requestRevision);
+			if(unexpectedLease != null) {
+				unexpectedLease.close();
+				Context.fatalError("Miss-only target preparation ran despite an exact reusable fixture entry.", Context.currentPos());
+			}
 		}
 		preparedFinalProgramId = snapshot.id;
 	}
@@ -172,6 +208,92 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		if(Context.defined("reflaxe_output_transaction_absolute")) {
 			output.saveFile(haxe.io.Path.join([Sys.getCwd(), "AbsoluteFailureProbe.testout"]), "must-not-write-absolute");
 		}
+		if(Context.defined("reflaxe_target_reuse_fixture")) {
+			stagedTargetReusePayload = encodeTargetReusePayload();
+		}
+	}
+
+	override public function tryReplayTargetReuse():Bool {
+		if(!Context.defined("reflaxe_target_reuse_fixture")) {
+			return false;
+		}
+		final probe = targetReuseProbe;
+		if(probe == null || probe.requestRevision == null) {
+			throw "Target reuse fixture was called without an exact request revision.";
+		}
+		final requestRevision:String = probe.requestRevision;
+		final catalog = TargetReuseCatalog.shared();
+		final lease = catalog.lookup(targetReuseNamespace(), requestRevision);
+		if(lease == null) {
+			return false;
+		}
+		final payload = try {
+			decodeTargetReusePayload(lease.copyPayload(), requestRevision);
+		} catch(_:Dynamic) {
+			catalog.quarantine(targetReuseNamespace(), requestRevision);
+			lease.close();
+			return false;
+		}
+		lease.close();
+		for(file in payload.files) {
+			output.replayFrameworkFile(file.path, Base64.decode(file.contentBase64));
+		}
+		output.finishFrameworkReplay();
+		return true;
+	}
+
+	override public function finishTargetReuseRequest(outcome:TargetReuseRequestOutcome):Void {
+		switch(outcome) {
+			case CompiledMiss:
+				final probe = targetReuseProbe;
+				final payload = stagedTargetReusePayload;
+				if(Context.defined("reflaxe_target_reuse_fixture")
+					&& probe != null
+					&& probe.eligible
+					&& probe.requestRevision != null
+					&& payload != null) {
+					final admission = TargetReuseCatalog.shared().admit(targetReuseNamespace(), probe.requestRevision, payload, 0);
+					if(!admission.admitted) {
+						throw 'Target reuse fixture admission failed: ${admission.reason}';
+					}
+				}
+			case ExactHit:
+			case Failed:
+		}
+		stagedTargetReusePayload = null;
+	}
+
+	function encodeTargetReusePayload():Bytes {
+		final probe = targetReuseProbe;
+		final outputDirectory = output.outputDir;
+		if(probe == null || probe.requestRevision == null || outputDirectory == null) {
+			throw "Target reuse fixture cannot encode output without current request and candidate paths.";
+		}
+		final receiptPath = Path.join([outputDirectory, output.GENERATED_LIST_FILENAME]);
+		final receipt = OutputMetadataCodec.decode(File.getContent(receiptPath), receiptPath);
+		final files = [
+			for(path in receipt.filesGenerated)
+				{
+					path: path,
+					contentBase64: Base64.encode(File.getBytes(Path.join([outputDirectory, path])))
+				}
+		];
+		return Bytes.ofString(Json.stringify({
+			schemaVersion: 1,
+			targetRequestRevision: probe.requestRevision,
+			files: files
+		}));
+	}
+
+	function decodeTargetReusePayload(bytes:Bytes, expectedRequestRevision:String):TestTargetReusePayload {
+		final payload:TestTargetReusePayload = Json.parse(bytes.toString());
+		if(payload.schemaVersion != 1
+			|| payload.targetRequestRevision != expectedRequestRevision
+			|| payload.files == null
+			|| payload.files.length == 0) {
+			throw "Target reuse fixture payload is invalid.";
+		}
+		return payload;
 	}
 
 	/**
@@ -196,6 +318,8 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {
+		preparedFinalProgramId = null;
+		stagedTargetReusePayload = null;
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			for(moduleType in moduleTypes) {
 				switch(moduleType) {

@@ -24,6 +24,7 @@ import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
 import reflaxe.lifecycle.TargetReuseCatalog;
 import reflaxe.lifecycle.TargetReuseCatalog.TargetReuseCatalogRealmObservation;
 import reflaxe.lifecycle.TargetReuseProbe;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
 import reflaxe.lifecycle.TargetReuseRevisionComponent;
 
 using StringTools;
@@ -477,6 +478,8 @@ abstract class BaseCompiler {
 		observation without exposing host compiler objects.
 	**/
 	final public function beginFinalProgramFingerprint(snapshot: FinalProgramFingerprintSnapshot, frameworkBlockers: Array<String>): Void {
+		programRevision = null;
+		finalProgramFingerprintAndKeyMilliseconds = null;
 		finalProgramFingerprint = snapshot;
 		targetReuseCatalogRealm = TargetReuseCatalog.beginSharedRequest();
 		final blockers = frameworkBlockers.copy();
@@ -505,6 +508,32 @@ abstract class BaseCompiler {
 		payload pass their independent correctness gates.
 	**/
 	public function prepareFinalProgram(moduleTypes: Array<ModuleType>, snapshot: FinalProgramFingerprintSnapshot): Void {}
+
+	/**
+		Attempts to reconstruct one exact reusable target result.
+
+		`ReflectCompiler` calls this only for an eligible probe and only after a
+		fresh private output transaction has started. Returning `true` means the
+		target wrote and validated the complete candidate, including a fresh
+		framework receipt and every target-owned file. Returning `false` aborts
+		the private candidate and continues through the one ordinary compiler.
+
+		Targets must catch and quarantine invalid cached payloads before returning
+		`false`. They must not publish output or retain a catalog lease here.
+	**/
+	public function tryReplayTargetReuse(): Bool {
+		return false;
+	}
+
+	/**
+		Finishes target-owned reuse state after the complete request boundary.
+
+		A target may admit a staged immutable payload only for `CompiledMiss`.
+		`Failed` must discard request-owned candidates, while `ExactHit` may update
+		observability only. Admission rejection changes a future request into a
+		miss and must not fail an otherwise successful compilation.
+	**/
+	public function finishTargetReuseRequest(outcome: TargetReuseRequestOutcome): Void {}
 
 	/** Returns the stable target catalog namespace, or `null` to opt out. **/
 	public function targetReuseNamespace(): Null<String> {
