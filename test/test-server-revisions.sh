@@ -87,6 +87,16 @@ run_server_build() {
 	)
 }
 
+run_server_rtti_ineligibility() {
+	(
+		cd "$WORK_DIR/server/test"
+		if ! "$HAXE_BIN" --connect "$PORT" Test.hxml "${COMMON_ARGS[@]}" -D reflaxe_rtti_reuse_probe; then
+			sed -n '1,200p' "$SERVER_LOG" >&2
+			return 1
+		fi
+	)
+}
+
 run_server_build_expect_failure() {
 	local define="$1"
 	if (
@@ -224,6 +234,21 @@ cp "$SCRIPT_ROOT/ProgramRevisionSubject.hx" "$WORK_DIR/server/test/ProgramRevisi
 touch -t 202001010103.03 "$WORK_DIR/server/test/ProgramRevisionSubject.hx"
 run_server_build
 assert_trees_equal "restored A-to-B-to-A server request" "$WORK_DIR/server-baseline" "$WORK_DIR/server/test/testlang"
+
+if [[ "$("$HAXE_BIN" -version)" == 4.* ]]; then
+	run_server_rtti_ineligibility
+	cp "$WORK_DIR/server/test/testlang/TargetReuseEligibility.testout" "$WORK_DIR/rtti-eligibility-first.testout"
+	run_server_rtti_ineligibility
+	if ! cmp -s "$WORK_DIR/rtti-eligibility-first.testout" "$WORK_DIR/server/test/testlang/TargetReuseEligibility.testout"; then
+		echo "unchanged RTTI requests did not report one stable target-reuse ineligibility reason" >&2
+		exit 1
+	fi
+	grep -Fx "eligible=false" "$WORK_DIR/server/test/testlang/TargetReuseEligibility.testout" >/dev/null
+	grep -F "reflaxe:source-authority:haxe4-compiler-generated-rtti-warm-input-unstable" \
+		"$WORK_DIR/server/test/testlang/TargetReuseEligibility.testout" >/dev/null
+else
+	echo "Skipping the Haxe 4.x RTTI reuse regression on $("$HAXE_BIN" -version)."
+fi
 
 run_server_build_with_metadata_id
 FIRST_METADATA_ID="$(metadata_id)"

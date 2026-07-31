@@ -579,6 +579,12 @@ class SemanticLifecycleTest {
 			if (snapshot.sourceAuthorityComplete || snapshot.sourceAuthorityBlockers().indexOf("field-reference-incomplete") < 0) {
 				Context.fatalError("a partial or out-of-slot host field did not block target reuse", Context.currentPos());
 			}
+			final probe = TargetReuseProbe.build(snapshot, "test-target", [], []);
+			if (probe.eligible
+				|| probe.blockers().indexOf("reflaxe:incomplete-source-authority") < 0
+				|| probe.blockers().indexOf("reflaxe:source-authority:field-reference-incomplete") < 0) {
+				Context.fatalError("a source-authority failure did not retain its specific target-reuse blocker", Context.currentPos());
+			}
 		}
 		final identities = [absent.id, sentinel.id, complete.id, partial.id, wrongSlot.id];
 		for (left in 0...identities.length) {
@@ -850,7 +856,7 @@ class SemanticLifecycleTest {
 		if (!~/^sha256:[0-9a-f]{64}$/.match(frameworkRevision)) {
 			Context.fatalError("the generic Reflaxe source inventory did not produce an exact SHA-256 revision", Context.currentPos());
 		}
-		final snapshot = FinalProgramFingerprintSnapshot.fromModuleTypes([moduleType("MyClass")]);
+		final snapshot = FinalProgramFingerprintSnapshot.fromModuleTypes([moduleType("ProgramRevisionSubject")]);
 		final forward = TargetReuseProbe.build(snapshot, "test-target", [
 			new TargetReuseRevisionComponent("implementation", "sha256:implementation"),
 			new TargetReuseRevisionComponent("configuration", "sha256:configuration")
