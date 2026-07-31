@@ -112,6 +112,19 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			|| preparedFinalProgramId != finalProgramFingerprint.id) {
 			Context.fatalError("The final-program fingerprint and target reuse probe were not sealed before target compilation.", Context.currentPos());
 		}
+		if(Context.defined("reflaxe_rtti_reuse_probe")) {
+			/*
+				Haxe 4.x can change its generated `__rtti` string between two
+				unchanged server requests. The target must still compile, but the
+				framework must explain why it did not reuse older generated files.
+			 */
+			final expectedBlocker = "reflaxe:source-authority:haxe4-compiler-generated-rtti-warm-input-unstable";
+			final blockers = targetReuseProbe.blockers();
+			if(targetReuseProbe.eligible || blockers.indexOf(expectedBlocker) == -1) {
+				Context.fatalError("Unstable Haxe 4.x RTTI input did not block exact target replay.", Context.currentPos());
+			}
+			setExtraFile("TargetReuseEligibility.testout", 'eligible=false\nblockers=${blockers.join(",")}\n');
+		}
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			final revision = programRevision;
 			if(revision == null) {

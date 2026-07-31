@@ -31,8 +31,11 @@ class TargetReuseProbe {
 	public static function build(snapshot:FinalProgramFingerprintSnapshot, targetNamespace:Null<String>, components:Array<TargetReuseRevisionComponent>,
 			blockers:Array<String>):TargetReuseProbe {
 		final nextBlockers = blockers.copy();
-		if (!snapshot.sourceAuthorityComplete)
+		if (!snapshot.sourceAuthorityComplete) {
 			nextBlockers.push("reflaxe:incomplete-source-authority");
+			for (blocker in snapshot.sourceAuthorityBlockers())
+				nextBlockers.push("reflaxe:source-authority:" + blocker);
+		}
 		if (targetNamespace == null || targetNamespace.length == 0) {
 			nextBlockers.push("reflaxe:target-reuse-not-configured");
 			return new TargetReuseProbe(null, normalizedBlockers(nextBlockers));

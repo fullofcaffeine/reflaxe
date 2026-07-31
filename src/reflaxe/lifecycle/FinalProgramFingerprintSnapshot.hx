@@ -185,6 +185,17 @@ private class FinalProgramFingerprintBuilder {
 	}
 
 	function addClass(publicApi:CanonicalFingerprint, implementation:CanonicalFingerprint, owner:String, cls:ClassType):Void {
+		#if (haxe_ver < "5.0.0")
+		/*
+			Haxe 4.x rebuilds a compiler-generated `__rtti` string for an
+			`@:rtti` class after each server request. Its cached metadata can gain
+			another compiler-owned `@:keep`, so identical source reaches a target
+			as different bytes. Compilation remains valid, but exact source replay
+			must wait until the host supplies stable RTTI input.
+		 */
+		if (cls.meta.has(":rtti") && sourceAuthorityBlockers.indexOf("haxe4-compiler-generated-rtti-warm-input-unstable") == -1)
+			sourceAuthorityBlockers.push("haxe4-compiler-generated-rtti-warm-input-unstable");
+		#end
 		for (target in [publicApi, implementation]) {
 			target.add("class-kind", classKindRevision(cls.kind));
 			target.addBool("interface", cls.isInterface);
