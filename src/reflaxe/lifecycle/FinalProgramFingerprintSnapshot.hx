@@ -229,10 +229,10 @@ private class FinalProgramFingerprintBuilder {
 			publicApi.add("array-access", fieldReferenceRevision(field));
 			implementation.add("array-access", fieldRevision(owner, "abstract-array", field, bodyRevision(field)));
 		}
-		publicApi.add("resolve", fieldReferenceRevision(abstractType.resolve));
-		publicApi.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite));
-		implementation.add("resolve", fieldReferenceRevision(abstractType.resolve));
-		implementation.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite));
+		publicApi.add("resolve", fieldReferenceRevision(abstractType.resolve, true));
+		publicApi.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite, true));
+		implementation.add("resolve", fieldReferenceRevision(abstractType.resolve, true));
+		implementation.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite, true));
 
 		if (abstractType.impl != null) {
 			for (field in abstractType.impl.get().statics.get())
@@ -432,7 +432,7 @@ private class FinalProgramFingerprintBuilder {
 		return (cls.pack ?? []).concat([cls.name]).join(".");
 	}
 
-	function fieldReferenceRevision(field:Null<ClassField>):String {
+	function fieldReferenceRevision(field:Null<ClassField>, allowHostResolveSentinel = false):String {
 		if (field == null)
 			return "";
 
@@ -446,7 +446,20 @@ private class FinalProgramFingerprintBuilder {
 		final name:Null<String> = cast field.name;
 		final type:Null<Type> = cast field.type;
 		final kind:Null<FieldKind> = cast field.kind;
-		if (name == null && type == null && kind == null)
+		final isPublic:Null<Bool> = cast field.isPublic;
+		final isExtern:Null<Bool> = cast field.isExtern;
+		final isFinal:Null<Bool> = cast field.isFinal;
+		final isAbstract:Null<Bool> = cast field.isAbstract;
+		final parameters:Null<Array<TypeParameter>> = cast field.params;
+		final metadata:Null<MetaAccess> = cast field.meta;
+		final position:Null<Position> = cast field.pos;
+		final documentation:Null<String> = cast field.doc;
+		final overloads:Null<Ref<Array<ClassField>>> = cast field.overloads;
+		final expressionProvider:Null<Void->Null<TypedExpr>> = cast field.expr;
+		final isHostResolveSentinel = name == null && type == null && kind == null && isPublic == null && isExtern == null && isFinal == null
+			&& isAbstract == null && parameters == null && metadata == null && position == null && documentation == null && overloads == null
+			&& expressionProvider == null;
+		if (allowHostResolveSentinel && isHostResolveSentinel)
 			return "<host-resolve-field-sentinel>";
 
 		/*
