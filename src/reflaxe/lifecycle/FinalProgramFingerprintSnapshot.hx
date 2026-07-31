@@ -35,7 +35,7 @@ using reflaxe.helpers.TypeHelper;
 	runtime, output-schema, ambient-input, and diagnostics eligibility revisions.
 **/
 class FinalProgramFingerprintSnapshot {
-	public static inline final SCHEMA_REVISION = "reflaxe-final-program-fingerprint-v1";
+	public static inline final SCHEMA_REVISION = "reflaxe-final-program-fingerprint-v2";
 
 	public final id:String;
 	public final programMembershipRevision:String;
@@ -433,7 +433,32 @@ private class FinalProgramFingerprintBuilder {
 	}
 
 	function fieldReferenceRevision(field:Null<ClassField>):String {
-		return field == null ? "" : '${field.name}|${field.type.getCanonicalId()}|${fieldKindRevision(field.kind)}';
+		if (field == null)
+			return "";
+
+		/*
+			Haxe 4.3.7 represents some abstract `@:op(a.b)` resolve hooks with a
+			non-null ClassField placeholder whose own properties are all null.
+			The placeholder means "this resolve hook exists"; it is not the same
+			as an absent hook. Record that distinction without asking TypeTools to
+			render the placeholder's null type.
+		 */
+		final name:Null<String> = cast field.name;
+		final type:Null<Type> = cast field.type;
+		final kind:Null<FieldKind> = cast field.kind;
+		if (name == null && type == null && kind == null)
+			return "<host-resolve-field-sentinel>";
+
+		/*
+			A partially populated field is not a known host placeholder. Keep the
+			snapshot build deterministic, but block target reuse because the key
+			cannot prove the field's complete identity.
+		 */
+		if (name == null || type == null || kind == null) {
+			sourceAuthorityBlockers.push("field-reference-incomplete");
+			return "<incomplete-field-reference>";
+		}
+		return '$name|${type.getCanonicalId()}|${fieldKindRevision(kind)}';
 	}
 
 	function expressionRevision(expression:Null<TypedExpr>):String {

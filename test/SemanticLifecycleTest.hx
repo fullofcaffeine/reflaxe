@@ -44,19 +44,23 @@ class SemanticLifecycleTest {
 	/** Registers lifecycle assertions after initialization macros finish. **/
 	public static function run():Void {
 		Context.onAfterInitMacros(() -> {
+			// Load the public Access type so Haxe also supplies its private
+			// dot-resolution abstracts to the after-typing regression below.
+			Context.getType("haxe.xml.Access");
 			var executed = false;
-			Context.onAfterTyping(_ -> {
+			Context.onAfterTyping(types -> {
 				if (!executed) {
 					executed = true;
-					execute();
+					execute(types);
 				}
 			});
 		});
 	}
 
-	static function execute():Void {
+	static function execute(finalTypes:Array<ModuleType>):Void {
 		assertCompleteProgramCaptureOwnsTargetInput();
 		assertFinalProgramFingerprintOwnsOrderedPlainFacts();
+		assertFinalProgramFingerprintHandlesResolveFieldSentinels(finalTypes);
 		assertCompleteProgramCaptureNormalizesCompilerReachabilityOrder();
 		assertTargetReuseProbeFailsClosed();
 		assertDirectoryOutputTransactionRollsBack();
@@ -497,6 +501,54 @@ class SemanticLifecycleTest {
 		secondEncoding.add("right", "b|c");
 		if (firstEncoding.digest() == secondEncoding.digest()) {
 			Context.fatalError("canonical fingerprint encoding admitted a delimiter collision", Context.currentPos());
+		}
+	}
+
+	/**
+		Proves Haxe's placeholder resolve fields remain exact fingerprint input.
+
+		Haxe 4.3.7 exposes the dot-access hooks in `haxe.xml.Access` as non-null
+		`ClassField` objects whose own name, type, and kind are null. Before this
+		regression, fingerprinting asked Haxe to render the null type and stopped
+		compilation before any target could run.
+
+		The placeholder's presence is now a stable fact distinct from no resolve
+		hook. A repeated snapshot must therefore be complete and deterministic.
+	**/
+	static function assertFinalProgramFingerprintHandlesResolveFieldSentinels(finalTypes:Array<ModuleType>):Void {
+		final resolveAbstracts = finalTypes.filter(moduleType -> switch (moduleType) {
+			case TAbstract(reference): final abstractType = reference.get(); StringTools.startsWith(abstractType.module,
+					"haxe.xml.Access") && (abstractType.resolve != null || abstractType.resolveWrite != null);
+			case _:
+				false;
+		});
+		var sentinelCount = 0;
+		for (moduleType in resolveAbstracts) {
+			switch (moduleType) {
+				case TAbstract(reference):
+					final abstractType = reference.get();
+					for (field in [abstractType.resolve, abstractType.resolveWrite]) {
+						if (field == null)
+							continue;
+						final name:Null<String> = cast field.name;
+						final type:Null<haxe.macro.Type> = cast field.type;
+						final kind:Null<haxe.macro.Type.FieldKind> = cast field.kind;
+						if (name == null && type == null && kind == null)
+							sentinelCount += 1;
+					}
+				case _:
+			}
+		}
+		if (resolveAbstracts.length == 0 || (Context.definedValue("haxe") == "4.3.7" && sentinelCount != 6)) {
+			Context.fatalError('the resolve-field regression did not observe the expected Haxe host shape'
+				+ ' (abstracts=${resolveAbstracts.length}, sentinels=$sentinelCount)',
+				Context.currentPos());
+		}
+
+		final first = FinalProgramFingerprintSnapshot.fromModuleTypes(resolveAbstracts);
+		final second = FinalProgramFingerprintSnapshot.fromModuleTypes(resolveAbstracts);
+		if (!first.sourceAuthorityComplete || first.id != second.id || first.declarations().length != resolveAbstracts.length) {
+			Context.fatalError("resolve-field sentinels did not produce one complete deterministic final-program fingerprint", Context.currentPos());
 		}
 	}
 
