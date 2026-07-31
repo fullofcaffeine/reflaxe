@@ -112,6 +112,7 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			|| preparedFinalProgramId != finalProgramFingerprint.id) {
 			Context.fatalError("The final-program fingerprint and target reuse probe were not sealed before target compilation.", Context.currentPos());
 		}
+		#if (haxe_ver < "5.0.0")
 		if(Context.defined("reflaxe_rtti_reuse_probe")) {
 			/*
 				Haxe 4.x can change its generated `__rtti` string between two
@@ -125,6 +126,7 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			}
 			setExtraFile("TargetReuseEligibility.testout", 'eligible=false\nblockers=${blockers.join(",")}\n');
 		}
+		#end
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			final revision = programRevision;
 			if(revision == null) {
