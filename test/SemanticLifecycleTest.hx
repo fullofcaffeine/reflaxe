@@ -2,6 +2,7 @@
 import haxe.macro.Context;
 import haxe.macro.Expr.MetadataEntry;
 import haxe.macro.ExprTools;
+import haxe.macro.Type.ClassField;
 import haxe.macro.Type.ClassType;
 import haxe.macro.Type.MetaAccess;
 import haxe.macro.Type.ModuleType;
@@ -44,19 +45,23 @@ class SemanticLifecycleTest {
 	/** Registers lifecycle assertions after initialization macros finish. **/
 	public static function run():Void {
 		Context.onAfterInitMacros(() -> {
+			// Load the public Access type so Haxe also supplies its private
+			// dot-resolution abstracts to the after-typing regression below.
+			Context.getType("haxe.xml.Access");
 			var executed = false;
-			Context.onAfterTyping(_ -> {
+			Context.onAfterTyping(types -> {
 				if (!executed) {
 					executed = true;
-					execute();
+					execute(types);
 				}
 			});
 		});
 	}
 
-	static function execute():Void {
+	static function execute(finalTypes:Array<ModuleType>):Void {
 		assertCompleteProgramCaptureOwnsTargetInput();
 		assertFinalProgramFingerprintOwnsOrderedPlainFacts();
+		assertFinalProgramFingerprintHandlesResolveFieldSentinels(finalTypes);
 		assertCompleteProgramCaptureNormalizesCompilerReachabilityOrder();
 		assertTargetReuseProbeFailsClosed();
 		assertDirectoryOutputTransactionRollsBack();
@@ -498,6 +503,172 @@ class SemanticLifecycleTest {
 		if (firstEncoding.digest() == secondEncoding.digest()) {
 			Context.fatalError("canonical fingerprint encoding admitted a delimiter collision", Context.currentPos());
 		}
+	}
+
+	/**
+		Proves Haxe's placeholder resolve fields remain exact fingerprint input.
+
+		Haxe 4.3.7 exposes the dot-access hooks in `haxe.xml.Access` as non-null
+		`ClassField` objects whose own name, type, and kind are null. Before this
+		regression, fingerprinting asked Haxe to render the null type and stopped
+		compilation before any target could run.
+
+		The placeholder's presence is now a stable fact distinct from no resolve
+		hook. A partial field must block reuse, and the placeholder is not valid
+		in operator or cast slots. This test exercises those distinctions rather
+		than merely repeating the implementation's null check.
+	**/
+	static function assertFinalProgramFingerprintHandlesResolveFieldSentinels(finalTypes:Array<ModuleType>):Void {
+		final resolveAbstracts = finalTypes.filter(moduleType -> switch (moduleType) {
+			case TAbstract(reference): final abstractType = reference.get(); StringTools.startsWith(abstractType.module,
+					"haxe.xml.Access") && (abstractType.resolve != null || abstractType.resolveWrite != null);
+			case _:
+				false;
+		});
+		var sentinelCount = 0;
+		for (moduleType in resolveAbstracts) {
+			switch (moduleType) {
+				case TAbstract(reference):
+					final abstractType = reference.get();
+					for (field in [abstractType.resolve, abstractType.resolveWrite]) {
+						if (isAllNullHostField(field))
+							sentinelCount += 1;
+					}
+				case _:
+			}
+		}
+		if (resolveAbstracts.length == 0 || (Context.definedValue("haxe") == "4.3.7" && sentinelCount != 6)) {
+			Context.fatalError('the resolve-field regression did not observe the expected Haxe host shape'
+				+ ' (abstracts=${resolveAbstracts.length}, sentinels=$sentinelCount)',
+				Context.currentPos());
+		}
+
+		final first = FinalProgramFingerprintSnapshot.fromModuleTypes(resolveAbstracts);
+		final second = FinalProgramFingerprintSnapshot.fromModuleTypes(resolveAbstracts);
+		if (!first.sourceAuthorityComplete || first.id != second.id || first.declarations().length != resolveAbstracts.length) {
+			Context.fatalError("resolve-field sentinels did not produce one complete deterministic final-program fingerprint", Context.currentPos());
+		}
+
+		var completeField:Null<ClassField> = null;
+		for (moduleType in finalTypes) {
+			if (completeField != null)
+				break;
+			switch (moduleType) {
+				case TClassDecl(reference):
+					final fields = reference.get().fields.get();
+					if (fields.length > 0)
+						completeField = fields[0];
+				case _:
+			}
+		}
+		if (completeField == null)
+			Context.fatalError("the resolve-field regression could not find a complete field for its differential check", Context.currentPos());
+
+		final exactSentinel = nullClassField();
+		final malformedPartial = nullClassField();
+		Reflect.setField(malformedPartial, "doc", "unexpected partial host field");
+		final absent = fingerprintWithResolveField(resolveAbstracts[0], null);
+		final sentinel = fingerprintWithResolveField(resolveAbstracts[0], exactSentinel);
+		final complete = fingerprintWithResolveField(resolveAbstracts[0], completeField);
+		final partial = fingerprintWithResolveField(resolveAbstracts[0], malformedPartial);
+		final wrongSlot = fingerprintWithOperatorField(resolveAbstracts[0], nullClassField());
+		if (!absent.sourceAuthorityComplete || !sentinel.sourceAuthorityComplete || !complete.sourceAuthorityComplete) {
+			Context.fatalError("absent, exact sentinel, or complete resolve fields unexpectedly blocked source authority", Context.currentPos());
+		}
+		for (snapshot in [partial, wrongSlot]) {
+			if (snapshot.sourceAuthorityComplete || snapshot.sourceAuthorityBlockers().indexOf("field-reference-incomplete") < 0) {
+				Context.fatalError("a partial or out-of-slot host field did not block target reuse", Context.currentPos());
+			}
+		}
+		final identities = [absent.id, sentinel.id, complete.id, partial.id, wrongSlot.id];
+		for (left in 0...identities.length) {
+			for (right in left + 1...identities.length) {
+				if (identities[left] == identities[right])
+					Context.fatalError("distinct resolve-field states produced the same final-program fingerprint", Context.currentPos());
+			}
+		}
+	}
+
+	/** Returns true only for the complete all-null shape exposed by Haxe 4.3.7. **/
+	static function isAllNullHostField(field:Null<ClassField>):Bool {
+		if (field == null)
+			return false;
+		final name:Null<String> = cast field.name;
+		final type:Null<haxe.macro.Type> = cast field.type;
+		final kind:Null<haxe.macro.Type.FieldKind> = cast field.kind;
+		final isPublic:Null<Bool> = cast field.isPublic;
+		final isExtern:Null<Bool> = cast field.isExtern;
+		final isFinal:Null<Bool> = cast field.isFinal;
+		final isAbstract:Null<Bool> = cast field.isAbstract;
+		final parameters:Null<Array<haxe.macro.Type.TypeParameter>> = cast field.params;
+		final metadata:Null<MetaAccess> = cast field.meta;
+		final position:Null<haxe.macro.Expr.Position> = cast field.pos;
+		final documentation:Null<String> = cast field.doc;
+		final overloads:Null<haxe.macro.Type.Ref<Array<ClassField>>> = cast field.overloads;
+		final expressionProvider:Null<Void->Null<TypedExpr>> = cast field.expr;
+		return name == null && type == null && kind == null && isPublic == null && isExtern == null && isFinal == null && isAbstract == null
+			&& parameters == null && metadata == null && position == null && documentation == null && overloads == null && expressionProvider == null;
+	}
+
+	/** Creates the host-shaped empty field used by the differential regression. **/
+	static function nullClassField():ClassField {
+		return cast {
+			name: null,
+			type: null,
+			isPublic: null,
+			isExtern: null,
+			isFinal: null,
+			isAbstract: null,
+			params: null,
+			meta: null,
+			kind: null,
+			expr: null,
+			pos: null,
+			doc: null,
+			overloads: null
+		};
+	}
+
+	/** Fingerprints one copied abstract with only the supplied resolve hook. **/
+	static function fingerprintWithResolveField(owner:ModuleType, field:Null<ClassField>):FinalProgramFingerprintSnapshot {
+		return FinalProgramFingerprintSnapshot.fromModuleTypes([
+			copyAbstract(owner, abstractType -> {
+				abstractType.resolve = field;
+				abstractType.resolveWrite = null;
+			})
+		]);
+	}
+
+	/** Fingerprints an all-null field outside the resolve-only exception. **/
+	static function fingerprintWithOperatorField(owner:ModuleType, field:ClassField):FinalProgramFingerprintSnapshot {
+		return FinalProgramFingerprintSnapshot.fromModuleTypes([
+			copyAbstract(owner, abstractType -> {
+				abstractType.resolve = null;
+				abstractType.resolveWrite = null;
+				abstractType.binops = [{op: OpAdd, field: field}];
+			})
+		]);
+	}
+
+	/**
+		Copies one abstract declaration without mutating Haxe's compiler-owned type.
+
+		The copied reference is used only during this assertion. Production
+		fingerprints continue to consume the host's original final program.
+	**/
+	static function copyAbstract(owner:ModuleType, mutate:haxe.macro.Type.AbstractType->Void):ModuleType {
+		return switch (owner) {
+			case TAbstract(reference):
+				final abstractType:haxe.macro.Type.AbstractType = cast Reflect.copy(reference.get());
+				mutate(abstractType);
+				final copiedReference:haxe.macro.Type.Ref<haxe.macro.Type.AbstractType> = {
+					get: () -> abstractType,
+					toString: () -> reference.toString()
+				};
+				TAbstract(copiedReference);
+			case _:
+				throw "resolve-field regression expected an abstract declaration";
+		};
 	}
 
 	/**

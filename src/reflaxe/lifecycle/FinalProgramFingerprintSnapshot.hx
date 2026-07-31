@@ -35,7 +35,7 @@ using reflaxe.helpers.TypeHelper;
 	runtime, output-schema, ambient-input, and diagnostics eligibility revisions.
 **/
 class FinalProgramFingerprintSnapshot {
-	public static inline final SCHEMA_REVISION = "reflaxe-final-program-fingerprint-v1";
+	public static inline final SCHEMA_REVISION = "reflaxe-final-program-fingerprint-v2";
 
 	public final id:String;
 	public final programMembershipRevision:String;
@@ -229,10 +229,10 @@ private class FinalProgramFingerprintBuilder {
 			publicApi.add("array-access", fieldReferenceRevision(field));
 			implementation.add("array-access", fieldRevision(owner, "abstract-array", field, bodyRevision(field)));
 		}
-		publicApi.add("resolve", fieldReferenceRevision(abstractType.resolve));
-		publicApi.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite));
-		implementation.add("resolve", fieldReferenceRevision(abstractType.resolve));
-		implementation.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite));
+		publicApi.add("resolve", fieldReferenceRevision(abstractType.resolve, true));
+		publicApi.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite, true));
+		implementation.add("resolve", fieldReferenceRevision(abstractType.resolve, true));
+		implementation.add("resolve-write", fieldReferenceRevision(abstractType.resolveWrite, true));
 
 		if (abstractType.impl != null) {
 			for (field in abstractType.impl.get().statics.get())
@@ -432,8 +432,46 @@ private class FinalProgramFingerprintBuilder {
 		return (cls.pack ?? []).concat([cls.name]).join(".");
 	}
 
-	function fieldReferenceRevision(field:Null<ClassField>):String {
-		return field == null ? "" : '${field.name}|${field.type.getCanonicalId()}|${fieldKindRevision(field.kind)}';
+	function fieldReferenceRevision(field:Null<ClassField>, allowHostResolveSentinel = false):String {
+		if (field == null)
+			return "";
+
+		/*
+			Haxe 4.3.7 represents some abstract `@:op(a.b)` resolve hooks with a
+			non-null ClassField placeholder whose own properties are all null.
+			The placeholder means "this resolve hook exists"; it is not the same
+			as an absent hook. Record that distinction without asking TypeTools to
+			render the placeholder's null type.
+		 */
+		final name:Null<String> = cast field.name;
+		final type:Null<Type> = cast field.type;
+		final kind:Null<FieldKind> = cast field.kind;
+		final isPublic:Null<Bool> = cast field.isPublic;
+		final isExtern:Null<Bool> = cast field.isExtern;
+		final isFinal:Null<Bool> = cast field.isFinal;
+		final isAbstract:Null<Bool> = cast field.isAbstract;
+		final parameters:Null<Array<TypeParameter>> = cast field.params;
+		final metadata:Null<MetaAccess> = cast field.meta;
+		final position:Null<Position> = cast field.pos;
+		final documentation:Null<String> = cast field.doc;
+		final overloads:Null<Ref<Array<ClassField>>> = cast field.overloads;
+		final expressionProvider:Null<Void->Null<TypedExpr>> = cast field.expr;
+		final isHostResolveSentinel = name == null && type == null && kind == null && isPublic == null && isExtern == null && isFinal == null
+			&& isAbstract == null && parameters == null && metadata == null && position == null && documentation == null && overloads == null
+			&& expressionProvider == null;
+		if (allowHostResolveSentinel && isHostResolveSentinel)
+			return "<host-resolve-field-sentinel>";
+
+		/*
+			A partially populated field is not a known host placeholder. Keep the
+			snapshot build deterministic, but block target reuse because the key
+			cannot prove the field's complete identity.
+		 */
+		if (name == null || type == null || kind == null) {
+			sourceAuthorityBlockers.push("field-reference-incomplete");
+			return "<incomplete-field-reference>";
+		}
+		return '$name|${type.getCanonicalId()}|${fieldKindRevision(kind)}';
 	}
 
 	function expressionRevision(expression:Null<TypedExpr>):String {
