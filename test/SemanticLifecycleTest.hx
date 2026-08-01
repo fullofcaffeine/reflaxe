@@ -1001,7 +1001,10 @@ class SemanticLifecycleTest {
 	static function assertFunctionLiteralOccurrencesHaveStableIdentities():Void {
 		final first = Context.typeExpr(macro {
 			final firstZero = function():Int return 1;
-			final withArgument = function(value:Int):Int return value + 1;
+			final withArgument = function(value:Int):Int {
+				final deep = function():Int return 1;
+				return value + deep();
+			};
 			final secondZero = function():Int return 3;
 			firstZero() + withArgument(2) + secondZero();
 		});
@@ -1011,7 +1014,10 @@ class SemanticLifecycleTest {
 		});
 		final second = Context.typeExpr(macro {
 			final firstZero = function():Int return 1;
-			final withArgument = function(value:Int):Int return value + 1;
+			final withArgument = function(value:Int):Int {
+				final deep = function():Int return 1;
+				return value + deep();
+			};
 			final secondZero = function():Int return 3;
 			firstZero() + withArgument(2) + secondZero();
 		});
@@ -1022,15 +1028,20 @@ class SemanticLifecycleTest {
 		final differentOwnerPlan = LexicalLocalIdentityPlan.build("different-function-occurrence-owner", first);
 		final firstIds = firstFunctions.map(expression -> firstPlan.requireFunctionOccurrence(expression).id);
 		final secondIds = secondFunctions.map(expression -> secondPlan.requireFunctionOccurrence(expression).id);
+		final firstParents = firstFunctions.map(expression -> firstPlan.requireFunctionOccurrence(expression).parentOccurrenceId);
 		final unique:Map<String, Bool> = [];
 		for (id in firstIds)
 			unique.set(id, true);
 		final foreignError = expectMessage(() -> secondPlan.requireFunctionOccurrence(firstFunctions[0]));
-		if (firstFunctions.length != 3
-			|| secondFunctions.length != 3
-			|| firstPlan.functionOccurrences().length != 3
+		if (firstFunctions.length != 4
+			|| secondFunctions.length != 4
+			|| firstPlan.functionOccurrences().length != 4
 			|| firstIds.join("|") != secondIds.join("|")
-			|| Lambda.count(unique) != 3
+			|| Lambda.count(unique) != 4
+			|| firstParents[0] != null
+			|| firstParents[1] != null
+			|| firstParents[2] != firstIds[1]
+			|| firstParents[3] != null
 			|| firstIds[0] == differentOwnerPlan.requireFunctionOccurrence(firstFunctions[0]).id
 			|| foreignError.indexOf("reflaxe:missing-function-occurrence-identity") == -1) {
 			Context.fatalError('function-literal occurrence identities were not stable, distinct, owner-scoped, and request-local: first=${firstIds.join("|")} second=${secondIds.join("|")} foreign=$foreignError',

@@ -46,6 +46,7 @@ class LexicalLocalIdentityPlan {
 	final functionOccurrencesByExpression:ObjectMap<TypedExpr, LexicalFunctionOccurrenceIdentity>;
 	final functionOccurrenceIds:Map<String, Bool>;
 	final orderedFunctionOccurrences:Array<LexicalFunctionOccurrenceIdentity>;
+	var currentParentFunctionOccurrenceId:Null<String>;
 
 	function new(ownerId:String) {
 		if (ownerId.length == 0) {
@@ -59,6 +60,7 @@ class LexicalLocalIdentityPlan {
 		functionOccurrencesByExpression = new ObjectMap();
 		functionOccurrenceIds = [];
 		orderedFunctionOccurrences = [];
+		currentParentFunctionOccurrenceId = null;
 	}
 
 	/**
@@ -179,20 +181,21 @@ class LexicalLocalIdentityPlan {
 		referencedHostIds.set(local.id, local);
 	}
 
-	function registerFunctionOccurrence(expression:TypedExpr, path:String):Void {
+	function registerFunctionOccurrence(expression:TypedExpr, path:String):LexicalFunctionOccurrenceIdentity {
 		final existing = functionOccurrencesByExpression.get(expression);
 		if (existing != null) {
-			if (existing.path == path)
-				return;
+			if (existing.path == path && existing.parentOccurrenceId == currentParentFunctionOccurrenceId)
+				return existing;
 			throw '[reflaxe:conflicting-function-occurrence-identity] One typed function expression appeared at both "${existing.path}" and "$path" under owner "$ownerId".';
 		}
-		final identity = LexicalFunctionOccurrenceIdentity.create(ownerId, path);
+		final identity = LexicalFunctionOccurrenceIdentity.create(ownerId, path, currentParentFunctionOccurrenceId);
 		if (functionOccurrenceIds.exists(identity.id)) {
 			throw '[reflaxe:conflicting-function-occurrence-identity] Two function literals claimed "${identity.id}" under owner "$ownerId".';
 		}
 		functionOccurrencesByExpression.set(expression, identity);
 		functionOccurrenceIds.set(identity.id, true);
 		orderedFunctionOccurrences.push(identity);
+		return identity;
 	}
 
 	function validateReferences():Void {
@@ -232,7 +235,9 @@ class LexicalLocalIdentityPlan {
 			case TUnop(_, _, operand):
 				visit(operand, child(path, "unary-operand"));
 			case TFunction(func):
-				registerFunctionOccurrence(expression, path);
+				final occurrence = registerFunctionOccurrence(expression, path);
+				final previousParentFunctionOccurrenceId = currentParentFunctionOccurrenceId;
+				currentParentFunctionOccurrenceId = occurrence.id;
 				for (index => argument in func.args) {
 					final argumentPath = indexed(path, "nested-function-argument", index);
 					register(argument.v, "function-argument", argumentPath);
@@ -241,6 +246,7 @@ class LexicalLocalIdentityPlan {
 					}
 				}
 				visit(func.expr, child(path, "nested-function-body"));
+				currentParentFunctionOccurrenceId = previousParentFunctionOccurrenceId;
 			case TVar(local, initializer):
 				register(local, "variable", child(path, "variable-binding"));
 				if (initializer != null) {
@@ -361,20 +367,25 @@ class LexicalFunctionOccurrenceIdentity {
 	public final ownerId:String;
 	public final path:String;
 
-	function new(id:String, ownerId:String, path:String) {
+	/** The enclosing function literal, or `null` when the ordinary method owns this literal directly. **/
+	public final parentOccurrenceId:Null<String>;
+
+	function new(id:String, ownerId:String, path:String, parentOccurrenceId:Null<String>) {
 		this.id = id;
 		this.ownerId = ownerId;
 		this.path = path;
+		this.parentOccurrenceId = parentOccurrenceId;
 	}
 
-	static function create(ownerId:String, path:String):LexicalFunctionOccurrenceIdentity {
+	static function create(ownerId:String, path:String, parentOccurrenceId:Null<String>):LexicalFunctionOccurrenceIdentity {
 		final payload = [
 			"lexical-function-occurrence-schema",
 			Std.string(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_SCHEMA_VERSION),
 			ownerId,
 			path
 		].map(LexicalLocalIdentity.encodePart).join("|");
-		return new LexicalFunctionOccurrenceIdentity(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + Sha256.encode(payload), ownerId, path);
+		return new LexicalFunctionOccurrenceIdentity(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + Sha256.encode(payload), ownerId, path,
+			parentOccurrenceId);
 	}
 }
 #end
