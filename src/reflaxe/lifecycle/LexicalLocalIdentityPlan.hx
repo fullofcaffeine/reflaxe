@@ -2,6 +2,7 @@ package reflaxe.lifecycle;
 
 #if (macro || reflaxe_runtime)
 import haxe.crypto.Sha256;
+import haxe.ds.ObjectMap;
 import haxe.macro.Type.TVar;
 import haxe.macro.Type.TypedExpr;
 
@@ -13,6 +14,12 @@ import haxe.macro.Type.TypedExpr;
 	cannot identify semantic artifacts across clean or server compilations. This
 	plan replaces that number with an owner-bound structural path before a target
 	can publish a body, lowering plan, or diagnostic report.
+
+	The same explicit traversal also names each nested function literal. A target
+	can look up that function's stable structural position during the current
+	compiler request, including when the function has no parameters. The lookup
+	uses the typed expression only as a temporary key; published identities contain
+	only the stable owner and structural path.
 
 	Some target-neutral preprocessors express a later assignment as another
 	`TVar` node with the original host ID. Such a node is a rebinding occurrence
@@ -26,6 +33,8 @@ import haxe.macro.Type.TypedExpr;
 class LexicalLocalIdentityPlan {
 	public static inline final SCHEMA_VERSION = 1;
 	public static inline final ID_PREFIX = "lexical-local-v1:";
+	public static inline final FUNCTION_OCCURRENCE_SCHEMA_VERSION = 1;
+	public static inline final FUNCTION_OCCURRENCE_ID_PREFIX = "lexical-function-occurrence-v1:";
 
 	/** Stable function or body identity that owns every local in this plan. **/
 	public final ownerId:String;
@@ -34,6 +43,9 @@ class LexicalLocalIdentityPlan {
 	final identitiesById:Map<String, Bool>;
 	final ordered:Array<LexicalLocalIdentity>;
 	final referencedHostIds:Map<Int, TVar>;
+	final functionOccurrencesByExpression:ObjectMap<TypedExpr, LexicalFunctionOccurrenceIdentity>;
+	final functionOccurrenceIds:Map<String, Bool>;
+	final orderedFunctionOccurrences:Array<LexicalFunctionOccurrenceIdentity>;
 
 	function new(ownerId:String) {
 		if (ownerId.length == 0) {
@@ -44,6 +56,9 @@ class LexicalLocalIdentityPlan {
 		identitiesById = [];
 		ordered = [];
 		referencedHostIds = [];
+		functionOccurrencesByExpression = new ObjectMap();
+		functionOccurrenceIds = [];
+		orderedFunctionOccurrences = [];
 	}
 
 	/**
@@ -76,9 +91,18 @@ class LexicalLocalIdentityPlan {
 		identities from entering revisions and reports.
 	**/
 	public static function isReusableId(value:String):Bool {
-		if (value == null || !StringTools.startsWith(value, ID_PREFIX) || value.length != ID_PREFIX.length + 64)
+		return isReusableSha256Id(value, ID_PREFIX);
+	}
+
+	/** Reports whether a value is one complete function-occurrence v1 ID. **/
+	public static function isReusableFunctionOccurrenceId(value:String):Bool {
+		return isReusableSha256Id(value, FUNCTION_OCCURRENCE_ID_PREFIX);
+	}
+
+	static function isReusableSha256Id(value:String, prefix:String):Bool {
+		if (value == null || !StringTools.startsWith(value, prefix) || value.length != prefix.length + 64)
 			return false;
-		for (index in ID_PREFIX.length...value.length) {
+		for (index in prefix.length...value.length) {
 			final code = value.charCodeAt(index);
 			if (code == null)
 				return false;
@@ -93,6 +117,11 @@ class LexicalLocalIdentityPlan {
 	/** Returns stable identities in canonical source-structure order. **/
 	public function identities():Array<LexicalLocalIdentity> {
 		return ordered.copy();
+	}
+
+	/** Returns stable function occurrences in canonical source-structure order. **/
+	public function functionOccurrences():Array<LexicalFunctionOccurrenceIdentity> {
+		return orderedFunctionOccurrences.copy();
 	}
 
 	/**
@@ -118,6 +147,21 @@ class LexicalLocalIdentityPlan {
 		return result;
 	}
 
+	/**
+		Returns the stable occurrence for a function expression in this plan.
+
+		The expression object identifies a node only during the current compiler
+		request. Callers may publish the returned plain-value identity, but they must
+		not retain the expression or this request-local lookup across requests.
+	**/
+	public function requireFunctionOccurrence(expression:TypedExpr):LexicalFunctionOccurrenceIdentity {
+		final result = functionOccurrencesByExpression.get(expression);
+		if (result == null) {
+			throw '[reflaxe:missing-function-occurrence-identity] A typed function expression has no occurrence identity under owner "$ownerId".';
+		}
+		return result;
+	}
+
 	function register(local:TVar, kind:String, path:String):Void {
 		if (byHostId.exists(local.id)) {
 			return;
@@ -133,6 +177,22 @@ class LexicalLocalIdentityPlan {
 
 	function reference(local:TVar):Void {
 		referencedHostIds.set(local.id, local);
+	}
+
+	function registerFunctionOccurrence(expression:TypedExpr, path:String):Void {
+		final existing = functionOccurrencesByExpression.get(expression);
+		if (existing != null) {
+			if (existing.path == path)
+				return;
+			throw '[reflaxe:conflicting-function-occurrence-identity] One typed function expression appeared at both "${existing.path}" and "$path" under owner "$ownerId".';
+		}
+		final identity = LexicalFunctionOccurrenceIdentity.create(ownerId, path);
+		if (functionOccurrenceIds.exists(identity.id)) {
+			throw '[reflaxe:conflicting-function-occurrence-identity] Two function literals claimed "${identity.id}" under owner "$ownerId".';
+		}
+		functionOccurrencesByExpression.set(expression, identity);
+		functionOccurrenceIds.set(identity.id, true);
+		orderedFunctionOccurrences.push(identity);
 	}
 
 	function validateReferences():Void {
@@ -172,6 +232,7 @@ class LexicalLocalIdentityPlan {
 			case TUnop(_, _, operand):
 				visit(operand, child(path, "unary-operand"));
 			case TFunction(func):
+				registerFunctionOccurrence(expression, path);
 				for (index => argument in func.args) {
 					final argumentPath = indexed(path, "nested-function-argument", index);
 					register(argument.v, "function-argument", argumentPath);
@@ -284,6 +345,36 @@ class LexicalLocalIdentity {
 
 	static inline function encodePart(value:String):String {
 		return '${value.length}:$value';
+	}
+}
+
+/**
+	A stable, host-neutral name for one nested function literal.
+
+	`path` names the literal's structural position inside `ownerId`. The Haxe
+	compiler's request-local expression object is deliberately absent, so this
+	value can safely participate in target plan revisions and reports.
+**/
+@:allow(reflaxe.lifecycle.LexicalLocalIdentityPlan)
+class LexicalFunctionOccurrenceIdentity {
+	public final id:String;
+	public final ownerId:String;
+	public final path:String;
+
+	function new(id:String, ownerId:String, path:String) {
+		this.id = id;
+		this.ownerId = ownerId;
+		this.path = path;
+	}
+
+	static function create(ownerId:String, path:String):LexicalFunctionOccurrenceIdentity {
+		final payload = [
+			"lexical-function-occurrence-schema",
+			Std.string(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_SCHEMA_VERSION),
+			ownerId,
+			path
+		].map(LexicalLocalIdentity.encodePart).join("|");
+		return new LexicalFunctionOccurrenceIdentity(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + Sha256.encode(payload), ownerId, path);
 	}
 }
 #end

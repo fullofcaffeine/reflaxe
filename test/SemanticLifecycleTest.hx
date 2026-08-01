@@ -67,6 +67,7 @@ class SemanticLifecycleTest {
 		assertDirectoryOutputTransactionRollsBack();
 		assertLexicalLocalIdentitiesNormalizeHostIds();
 		assertLexicalLocalIdentitiesRemainDistinct();
+		assertFunctionLiteralOccurrencesHaveStableIdentities();
 		assertLexicalLocalIdentityShapeFailsClosed();
 		assertLexicalLocalRebindingsReuseIdentityAndMissingLocalsFailClosed();
 		assertProgramRevisionNormalizesHostLocalIds();
@@ -989,12 +990,81 @@ class SemanticLifecycleTest {
 		}
 	}
 
+	/**
+		Proves the existing lexical traversal can name function literals directly.
+
+		A function-literal occurrence is one structural position inside the enclosing
+		typed body. The identity must work even when the literal has no arguments,
+		because there is then no parameter identity from which a target could safely
+		infer the function position.
+	**/
+	static function assertFunctionLiteralOccurrencesHaveStableIdentities():Void {
+		final first = Context.typeExpr(macro {
+			final firstZero = function():Int return 1;
+			final withArgument = function(value:Int):Int return value + 1;
+			final secondZero = function():Int return 3;
+			firstZero() + withArgument(2) + secondZero();
+		});
+		Context.typeExpr(macro {
+			final unrelated = function(value:String):String return value;
+			unrelated("shift host allocations");
+		});
+		final second = Context.typeExpr(macro {
+			final firstZero = function():Int return 1;
+			final withArgument = function(value:Int):Int return value + 1;
+			final secondZero = function():Int return 3;
+			firstZero() + withArgument(2) + secondZero();
+		});
+		final firstFunctions = collectFunctionLiterals(first);
+		final secondFunctions = collectFunctionLiterals(second);
+		final firstPlan = LexicalLocalIdentityPlan.build("function-occurrence-owner", first);
+		final secondPlan = LexicalLocalIdentityPlan.build("function-occurrence-owner", second);
+		final differentOwnerPlan = LexicalLocalIdentityPlan.build("different-function-occurrence-owner", first);
+		final firstIds = firstFunctions.map(expression -> firstPlan.requireFunctionOccurrence(expression).id);
+		final secondIds = secondFunctions.map(expression -> secondPlan.requireFunctionOccurrence(expression).id);
+		final unique:Map<String, Bool> = [];
+		for (id in firstIds)
+			unique.set(id, true);
+		final foreignError = expectMessage(() -> secondPlan.requireFunctionOccurrence(firstFunctions[0]));
+		if (firstFunctions.length != 3
+			|| secondFunctions.length != 3
+			|| firstPlan.functionOccurrences().length != 3
+			|| firstIds.join("|") != secondIds.join("|")
+			|| Lambda.count(unique) != 3
+			|| firstIds[0] == differentOwnerPlan.requireFunctionOccurrence(firstFunctions[0]).id
+			|| foreignError.indexOf("reflaxe:missing-function-occurrence-identity") == -1) {
+			Context.fatalError('function-literal occurrence identities were not stable, distinct, owner-scoped, and request-local: first=${firstIds.join("|")} second=${secondIds.join("|")} foreign=$foreignError',
+				Context.currentPos());
+		}
+	}
+
+	/** Returns function expressions in the explicit typed-tree traversal order. **/
+	static function collectFunctionLiterals(root:TypedExpr):Array<TypedExpr> {
+		final result:Array<TypedExpr> = [];
+		function visit(expression:TypedExpr):Void {
+			switch (expression.expr) {
+				case TFunction(_):
+					result.push(expression);
+				case _:
+			}
+			TypedExprTools.iter(expression, visit);
+		}
+		visit(root);
+		return result;
+	}
+
 	static function assertLexicalLocalIdentityShapeFailsClosed():Void {
 		final valid = LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "0", 64);
+		final validFunctionOccurrence = LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + StringTools.lpad("", "0", 64);
 		if (!LexicalLocalIdentityPlan.isReusableId(valid)
 			|| LexicalLocalIdentityPlan.isReusableId("17")
 			|| LexicalLocalIdentityPlan.isReusableId(LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "0", 63))
-			|| LexicalLocalIdentityPlan.isReusableId(LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "G", 64))) {
+			|| LexicalLocalIdentityPlan.isReusableId(LexicalLocalIdentityPlan.ID_PREFIX + StringTools.lpad("", "G", 64))
+			|| !LexicalLocalIdentityPlan.isReusableFunctionOccurrenceId(validFunctionOccurrence)
+			|| LexicalLocalIdentityPlan.isReusableFunctionOccurrenceId("17")
+			|| LexicalLocalIdentityPlan.isReusableFunctionOccurrenceId(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + StringTools.lpad("", "0", 63))
+			|| LexicalLocalIdentityPlan.isReusableFunctionOccurrenceId(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + StringTools.lpad("", "G",
+				64))) {
 			Context.fatalError("lexical-local publication validation accepted a host ID or rejected one complete stable ID", Context.currentPos());
 		}
 	}
