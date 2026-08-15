@@ -17,6 +17,7 @@ import reflaxe.lifecycle.FunctionBodyRevision;
 import reflaxe.lifecycle.CanonicalFingerprint;
 import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.LexicalLocalIdentityPlan;
+import reflaxe.lifecycle.MacroSha256;
 import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 import reflaxe.lifecycle.ProgramRevision;
 import reflaxe.lifecycle.ReflaxeImplementationRevision;
@@ -59,6 +60,7 @@ class SemanticLifecycleTest {
 	}
 
 	static function execute(finalTypes:Array<ModuleType>):Void {
+		assertMacroSha256MatchesStandard();
 		assertCompleteProgramCaptureOwnsTargetInput();
 		assertFinalProgramFingerprintOwnsOrderedPlainFacts();
 		assertFinalProgramFingerprintHandlesResolveFieldSentinels(finalTypes);
@@ -83,6 +85,34 @@ class SemanticLifecycleTest {
 		assertExactBodyRevisionDetectsInPlaceMutation();
 		assertTraceIsOutputInert();
 		ClassFieldHelper.resetDataCaches();
+	}
+
+	/** Proves that the macro-optimized implementation keeps the standard digest bytes. **/
+	static function assertMacroSha256MatchesStandard():Void {
+		final knownVectors = [
+			{value: "", expected: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+			{value: "abc", expected: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}
+		];
+		for (vector in knownVectors)
+			if (MacroSha256.encode(vector.value) != vector.expected)
+				Context.fatalError("macro SHA-256 did not match a published SHA-256 test vector", Context.currentPos());
+
+		final boundaryValues = [
+			"é🙂",
+			StringTools.lpad("", "a", 55),
+			StringTools.lpad("", "b", 56),
+			StringTools.lpad("", "c", 63),
+			StringTools.lpad("", "d", 64),
+			StringTools.lpad("", "e", 65),
+			StringTools.lpad("", "compiler-body", 8192)
+		];
+		for (value in boundaryValues) {
+			final optimized = MacroSha256.encode(value);
+			final standard = haxe.crypto.Sha256.encode(value);
+			if (optimized != standard)
+				Context.fatalError('macro SHA-256 differed from the standard implementation for ${haxe.io.Bytes.ofString(value).length} input bytes ($optimized != $standard)',
+					Context.currentPos());
+		}
 	}
 
 	/**
