@@ -72,8 +72,19 @@ class ProgramRevision {
 			}
 		}
 
+		return fromCompatibilityEntries(entries, moduleTypes.length, functionCount);
+	}
+
+	/**
+		Builds the compatibility revision from already-observed final-program facts.
+
+		This avoids a second typed-body walk when the richer final-program snapshot
+		and the historical revision are both required.
+	**/
+	public static function fromCompatibilityEntries(entries:Array<String>, moduleCount:Int, functionCount:Int):ProgramRevision {
+		final entries = entries.copy();
 		entries.sort(Reflect.compare);
-		return new ProgramRevision(Sha256.encode(entries.join("\n")), moduleTypes.length, functionCount);
+		return new ProgramRevision(Sha256.encode(entries.join("\n")), moduleCount, functionCount);
 	}
 }
 #end

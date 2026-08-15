@@ -13,7 +13,10 @@
 
 # This will normally be called automatically by the library, but we do it like this for testing.
 --macro reflaxe.ReflectCompiler.Start()
+--macro EverythingIsExprSanitizerTest.run()
+--macro RemoveLocalVariableAliasesTest.run()
 --macro RemovePureExpressionsTest.run()
+--macro RemoveReassignedVariableDeclarationsTest.run()
 --macro SemanticLifecycleTest.run()
 -D reflaxe_lifecycle_test
 

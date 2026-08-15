@@ -26,9 +26,10 @@ import reflaxe.data.EnumOptionArg;
 import reflaxe.data.EnumOptionData;
 import reflaxe.input.ClassHierarchyTracker;
 import reflaxe.input.ModuleUsageTracker;
-import reflaxe.lifecycle.ModuleTypeBatchAccumulator;
-import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.CompleteProgramTypeCapture;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.SemanticLifecycleError;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
 
 using reflaxe.helpers.ArrayHelper;
 using reflaxe.helpers.BaseTypeHelper;
@@ -59,9 +60,8 @@ class ReflectCompiler {
 		static var called = false;
 		if(!called) {
 			if(#if eval !Context.defined("display") #else true #end) {
-				Context.onAfterTyping(onAfterTyping);
+				Context.onGenerate(captureCompleteProgram, false);
 				Context.onAfterGenerate(onAfterGenerate);
-				checkServerCache();
 			}
 			called = true;
 		} else {
@@ -107,43 +107,6 @@ class ReflectCompiler {
 	}
 
 	// =======================================================
-	// * Caching System
-	// =======================================================
-	#if !reflaxe.disallow_build_cache_check
-	public static var isCachedRebuild = false;
-	static var rebuiltClasses: Null<Array<ClassType>> = null;
-	#end
-
-	#if !reflaxe.disallow_build_cache_check
-	@:persistent static var isCachedRun = false;
-	#end
-
-	public static function checkServerCache() {
-		#if !reflaxe.disallow_build_cache_check
-		if(#if eval !Context.defined("display") #else true #end) {
-			if(!isCachedRun) {
-				isCachedRun = true;
-			} else {
-				rebuiltClasses = [];
-				#if eval
-				Compiler.addGlobalMetadata("", "@:build(reflaxe.ReflectCompiler.addToBuildCache())");
-				#end
-			}
-		}
-		#end
-	}
-
-	#if !reflaxe.disallow_build_cache_check
-	static function addToBuildCache(): Null<Array<Field>> {
-		final cls = #if eval Context.getLocalClass() #else null #end;
-		if(cls != null && rebuiltClasses != null) {
-			rebuiltClasses.push(cls.get());
-		}
-		return null;
-	}
-	#end
-
-	// =======================================================
 	// * Plugin System
 	// =======================================================
 	static var initCallbacks: Null<Array<Dynamic>> = null;
@@ -168,14 +131,14 @@ class ReflectCompiler {
 	// =======================================================
 	// * Private Members
 	// =======================================================
-	static final haxeProvidedModuleTypes = new ModuleTypeBatchAccumulator();
+	static final completeProgram = new CompleteProgramTypeCapture();
 
-	static function onAfterTyping(moduleTypes: Array<ModuleType>) {
-		haxeProvidedModuleTypes.add(moduleTypes);
+	static function captureCompleteProgram(types: Array<Type>) {
+		completeProgram.replace(types);
 	}
 
 	static function onAfterGenerate() {
-		checkCompilers(haxeProvidedModuleTypes.take());
+		checkCompilers(completeProgram.take());
 	}
 
 	static function checkCompilers(moduleTypes: Array<ModuleType>) {
@@ -259,7 +222,80 @@ class ReflectCompiler {
 
 		// Apply other type filters
 		final moduleTypes = applyModuleFilters(moduleTypes);
-		compiler.beginProgramRevision(ProgramRevision.fromModuleTypes(moduleTypes));
+		final fingerprintStarted = haxe.Timer.stamp();
+		final finalProgramFingerprint = FinalProgramFingerprintSnapshot.fromModuleTypes(moduleTypes);
+		final frameworkBlockers = initCallbacks == null ? [] : ["reflaxe:unrevisioned-compile-begin-callback"];
+		if(#if eval Context.defined("no-macro-cache") #else false #end) {
+			frameworkBlockers.push("reflaxe:no-macro-cache");
+		}
+		compiler.beginFinalProgramFingerprint(finalProgramFingerprint, frameworkBlockers);
+		final fingerprintMilliseconds = Std.int((haxe.Timer.stamp() - fingerprintStarted) * 1000.0);
+		compiler.recordFinalProgramFingerprintAndKeyMilliseconds(fingerprintMilliseconds < 0 ? 0 : fingerprintMilliseconds);
+
+		final targetLifecycleStarted = haxe.Timer.stamp();
+		var targetReuseHit = false;
+		try {
+			targetReuseHit = tryPublishTargetReuseHit(compiler);
+			if(!targetReuseHit) {
+				compileTargetMiss(compiler, moduleTypes, finalProgramFingerprint);
+			}
+			// The generated tree is now public. Keep external build or inspection
+			// work outside the candidate-abort scope because publication cannot be
+			// rolled back safely after its commit point.
+			compiler.onOutputPublished();
+		} catch(cause: Dynamic) {
+			compiler.recordTargetReuseLifecycleMilliseconds(elapsedMilliseconds(targetLifecycleStarted));
+			compiler.finishTargetReuseRequest(TargetReuseRequestOutcome.Failed);
+			throw cause;
+		}
+		compiler.recordTargetReuseLifecycleMilliseconds(elapsedMilliseconds(targetLifecycleStarted));
+		compiler.finishTargetReuseRequest(
+			targetReuseHit ? TargetReuseRequestOutcome.ExactHit : TargetReuseRequestOutcome.CompiledMiss
+		);
+	}
+
+	static inline function elapsedMilliseconds(started: Float): Int {
+		return Std.int(Math.max(0, (haxe.Timer.stamp() - started) * 1000.0));
+	}
+
+	/**
+		Attempts one exact replay inside a fresh private output transaction.
+
+		A clean miss aborts that unused candidate before the ordinary target
+		compiler starts. Any thrown replay or publication error also aborts and
+		remains a request failure; the target must explicitly quarantine a corrupt
+		entry and return `false` to request a safe normal compilation.
+	**/
+	static function tryPublishTargetReuseHit(compiler: BaseCompiler): Bool {
+		final probe = compiler.targetReuseProbe;
+		if(probe == null || !probe.eligible) {
+			return false;
+		}
+		compiler.beginOutputTransaction();
+		try {
+			if(!compiler.tryReplayTargetReuse()) {
+				compiler.abortOutputTransaction();
+				return false;
+			}
+			#if reflaxe_output_transaction_test_fail_before_commit
+			throw "injected Reflaxe output transaction failure before publication";
+			#end
+			compiler.commitOutputTransaction();
+			return true;
+		} catch(cause: Dynamic) {
+			try {
+				compiler.abortOutputTransaction();
+			} catch(abortCause: Dynamic) {
+				throw new haxe.Exception('Reflaxe reuse output failed (${Std.string(cause)}), and its private candidate could not be aborted: ${Std.string(abortCause)}');
+			}
+			throw cause;
+		}
+	}
+
+	/** Runs the existing semantic target compiler and publishes one complete tree. **/
+	static function compileTargetMiss(compiler: BaseCompiler, moduleTypes: Array<ModuleType>, finalProgramFingerprint: FinalProgramFingerprintSnapshot): Void {
+		compiler.prepareFinalProgram(moduleTypes, finalProgramFingerprint);
+		compiler.beginProgramRevision(finalProgramFingerprint.programRevision);
 
 		// Start
 		callInitCallbacks(compiler);
@@ -280,18 +316,28 @@ class ReflectCompiler {
 			dynamicallyAddModulesToCompiler(compiler);
 		}
 
-		// Generate files
-		generateFiles(compiler);
-		compiler.onOutputComplete();
+		// Generate and validate one private candidate before publishing it.
+		compiler.beginOutputTransaction();
+		try {
+			generateFiles(compiler);
+			compiler.onOutputComplete();
+			#if reflaxe_output_transaction_test_fail_before_commit
+			throw "injected Reflaxe output transaction failure before publication";
+			#end
+			compiler.commitOutputTransaction();
+		} catch(cause: Dynamic) {
+			try {
+				compiler.abortOutputTransaction();
+			} catch(abortCause: Dynamic) {
+				throw new haxe.Exception('Reflaxe output failed (${Std.string(cause)}), and its private candidate could not be aborted: ${Std.string(abortCause)}');
+			}
+			throw cause;
+		}
 	}
 
-	/**
-		Filters types based on defines and build cache.
-	**/
+	/** Filters types based on user-selected generation defines. **/
 	static function applyModuleFilters(moduleTypes: Array<ModuleType>) {
-		final moduleTypes = applyDefineFilters(moduleTypes);
-		final moduleTypes = applyBuildCacheCheckFilter(moduleTypes);
-		return moduleTypes;
+		return applyDefineFilters(moduleTypes);
 	}
 
 	static function applyDefineFilters(moduleTypes: Array<ModuleType>) {
@@ -320,34 +366,6 @@ class ReflectCompiler {
 		#else
 		return moduleTypes;
 		#end
-	}
-
-	static function applyBuildCacheCheckFilter(moduleTypes: Array<ModuleType>) {
-		#if !reflaxe.disallow_build_cache_check
-		if(rebuiltClasses != null) {
-			final result = moduleTypes.filter(mt -> {
-				switch(mt) {
-					case TClassDecl(_.get() => c): {
-						for(cls in rebuiltClasses) {
-							if(cls.name == c.name && cls.module == c.module && cls.pack.equals(c.pack)) {
-								return true;
-							}
-						}
-					}
-					case _: return true; // Non-class types cannot be tracked with build macros, so always build for now...
-				}
-				return false;
-			});
-
-			// If anything is filtered out, we ARE doing a cache rebuild.
-			if(result.length != moduleTypes.length) {
-				isCachedRebuild = true;
-			}
-
-			return result;
-		}
-		#end
-		return moduleTypes;
 	}
 
 	static function getAllModulesTypesForCompiler(compiler: BaseCompiler, moduleTypes: ReadOnlyArray<ModuleType>): ReadOnlyArray<ModuleType> {

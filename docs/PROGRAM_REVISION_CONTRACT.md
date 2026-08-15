@@ -40,19 +40,24 @@ program fingerprint changed.
 
 ## What Reflaxe normalizes
 
-Before hashing a function for the program fingerprint, Reflaxe replaces each
-process-wide local number with its order of first appearance inside that
-function:
+Before hashing a function, Reflaxe walks the typed body in a documented
+structural order. Each declaration receives an identity from:
 
-```text
-value(5378) -> value(0)
-value(5380) -> value(0)
-```
+- the function or body that owns it;
+- its declaration role, such as argument, ordinary variable, or catch binding;
+- its structural path through the typed expression; and
+- its source name.
 
-This replacement is local to one function. It does not use the variable name as
-its identity, so two nested variables both named `value` still receive distinct
-numbers. Text inside a Haxe string literal is never interpreted as an internal
-variable record.
+For example, the host numbers `value(5378)` and `value(5380)` both resolve to
+the same lexical identity when they describe the same declaration in two
+compiler processes. Two nested declarations both named `value` still differ
+because their structural paths differ.
+
+`LexicalLocalIdentityPlan` performs this walk. It keeps Haxe's number only in a
+request-local lookup map so reads can be matched to declarations. The number is
+replaced before a program revision, function-body revision, target plan, or
+report can use it. Text inside a Haxe string literal is never interpreted as an
+internal variable record.
 
 Only the unstable number is replaced. The detailed typed expression still
 records the facts that should invalidate cached work, including:
@@ -71,7 +76,7 @@ Reflaxe deliberately keeps these identifiers separate:
 | Identifier | Question it answers | Example reason to change |
 | --- | --- | --- |
 | Program revision | Is this the same selected Haxe program across requests? | A function body, type, field access, or retained declaration changed. |
-| Function-body revision | Does a target record still describe the exact mutable body in this preprocessing run? | A preprocessor replaced or changed that body. |
+| Function-body revision | Does a target record still describe this exact typed body and explicit replacement generation? | A preprocessor replaced or changed that body. |
 | Target pipeline revision | Is this the same target implementation and configuration? | A target changed how it represents or generates an operation. |
 
 A **target record** here means information a target calculated for later use.
@@ -79,19 +84,22 @@ For example, a target may record how to evaluate `items[nextIndex()]++` without
 calling `nextIndex()` too many times. Reflaxe rejects that record if any
 identifier it depends on no longer matches.
 
-Normalizing program-local numbers does not weaken the stricter function-body
-check. A target record tied to one exact preprocessing body still becomes stale
-when that body changes.
+Normalizing local numbers does not weaken the stricter function-body check. The
+body digest keeps the full normalized typed expression, and an explicit
+generation counter advances whenever `ClassFuncData.setExpr` replaces the root,
+including a structurally equivalent replacement. A target record tied to that
+body still becomes stale when the body changes.
 
-## Schema 2 rollover
+## Revision rollovers
 
 The normalized program fingerprint uses program-revision schema 2. Moving from
 schema 1 to schema 2 intentionally changes existing opaque fingerprint values
 once, even for unchanged source. Targets must treat the value as an indivisible
 cache key and must not parse it or depend on a particular hash.
 
-After that rollover, unrelated process-wide local-number changes no longer
-invalidate the program fingerprint.
+Lexical-local identities use schema 1. Applying them to function-body revisions
+also changes existing opaque body digests once. After those rollovers, unrelated
+process-wide local-number changes no longer invalidate either revision.
 
 This schema change must not alter generated target source or runtime behavior.
 
@@ -129,8 +137,10 @@ decisions.
 
 - [`ProgramRevision.hx`](../src/reflaxe/lifecycle/ProgramRevision.hx) assembles
   the selected program fingerprint.
+- [`LexicalLocalIdentityPlan.hx`](../src/reflaxe/lifecycle/LexicalLocalIdentityPlan.hx)
+  maps request-local Haxe variables to stable lexical declarations.
 - [`NormalizedProgramBodyDigest.hx`](../src/reflaxe/lifecycle/NormalizedProgramBodyDigest.hx)
-  performs the bounded local-number normalization.
+  replaces renderer-local numbers through that plan before hashing.
 - [`FunctionBodyRevision.hx`](../src/reflaxe/lifecycle/FunctionBodyRevision.hx)
   owns the stricter per-preprocessing-body identity.
 - [`SemanticLifecycleTest.hx`](../test/SemanticLifecycleTest.hx) proves that

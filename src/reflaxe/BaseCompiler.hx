@@ -16,10 +16,17 @@ import reflaxe.output.OutputManager;
 import reflaxe.output.OutputPath;
 import reflaxe.output.StringOrBytes;
 import reflaxe.preprocessors.ExpressionPreprocessor;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.ReflaxeImplementationRevision;
 import reflaxe.lifecycle.SemanticLifecycle;
 import reflaxe.lifecycle.SemanticLifecycleOptions;
 import reflaxe.lifecycle.SemanticLifecycleTraceEvent;
+import reflaxe.lifecycle.TargetReuseCatalog;
+import reflaxe.lifecycle.TargetReuseCatalog.TargetReuseCatalogRealmObservation;
+import reflaxe.lifecycle.TargetReuseProbe;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
+import reflaxe.lifecycle.TargetReuseRevisionComponent;
 
 using StringTools;
 
@@ -191,12 +198,23 @@ class BaseCompilerOptions {
 	/**
 		If `true`, any old output files that are not generated
 		in the most recent compilation will be deleted.
-		A text file containing all the current output files is
-		saved in the output directory to help keep track. 
+		A JSON receipt containing all the current output files is
+		saved in the output directory to help keep track.
 
 		This feature is ignored when "fileOutputType" is SingleFile.
 	**/
 	public var deleteOldOutput: Bool = true;
+
+	/**
+		If `true`, directory-shaped output is generated privately and published
+		only after target completion succeeds.
+
+		Enable this only when the compiler owns the complete output directory.
+		Publishing replaces that directory, so unknown files cannot be preserved
+		without an explicit target-level owner. `Manual` and `SingleFile` output
+		are not transactional.
+	**/
+	public var transactionalFileOutput: Bool = false;
 
 	/**
 		If `false`, an error is thrown if a function without
@@ -297,16 +315,26 @@ abstract class BaseCompiler {
 	// =======================================================
 
 	/**
-		A function intended to be overriden by your compiler class.
+		Lets a target choose which typed declarations it will generate.
 
-		This is called once at the start of compilation.
+		Reflaxe calls this once before target-specific preparation begins. The input
+		contains every declaration supplied by Haxe, including declarations that
+		share one source module.
 
-		`moduleTypes` is an array of ALL types supplied by the Haxe
-		compiler. Removing (or adding?) entries from this will
-		change what modules are sent to your compiler.
+		The input order is deterministic: source modules are sorted by their stable
+		Haxe module name, and declarations from one module are sorted by source
+		position with stable declaration identity as a tie-breaker. Haxe's internal
+		callback traversal order is deliberately not exposed because it can change
+		between cold and warm compilation-server requests for the same program.
+
+		This order is not a dependency or inheritance order. A target that needs
+		dependencies before their consumers must derive that relationship from the
+		typed declarations instead of relying on array position.
 
 		`moduleTypes` is a unique copy made specifically for this
-		function, so it is safe to modify directly and return it.
+		function, so it is safe to modify directly and return it. Removing an entry
+		prevents that declaration from reaching later target phases. Added entries
+		must still be valid declarations from the current compiler request.
 
 		To enable the exact behavior supplied by the deprecated
 		`smartDCE` option, the following code can be used:
@@ -372,6 +400,17 @@ abstract class BaseCompiler {
 	public function onCompileStart() {}
 	public function onCompileEnd() {}
 	public function onOutputComplete() {}
+	/**
+		Called after Reflaxe has published the complete generated output.
+
+		`onOutputComplete` still runs against the private candidate when
+		transactional directory output is enabled. Use this later hook for target
+		work that must observe the stable public path, such as invoking an
+		external build system whose reusable state must not name the candidate.
+
+		A failure here does not roll back already-published generated source.
+	**/
+	public function onOutputPublished() {}
 	public function onClassAdded(cls: ClassType, output: Null<String>): Void {}
 	public function onEnumAdded(cls: EnumType, output: Null<String>): Void {}
 	public function onTypedefAdded(cls: DefType, output: Null<String>): Void {}
@@ -418,6 +457,16 @@ abstract class BaseCompiler {
 	public var options(default, null): BaseCompilerOptions = {};
 	public var expressionPreprocessors(default, null): Array<ExpressionPreprocessor> = [];
 	public var programRevision(default, null): Null<ProgramRevision>;
+	public var finalProgramFingerprint(default, null): Null<FinalProgramFingerprintSnapshot>;
+	public var targetReuseProbe(default, null): Null<TargetReuseProbe>;
+	/** Time spent building the final fingerprint and exact target request key. **/
+	public var finalProgramFingerprintAndKeyMilliseconds(default, null): Null<Int>;
+	/** Complete post-fingerprint target lifecycle time for the current request. **/
+	public var targetReuseLifecycleMilliseconds(default, null): Null<Int>;
+	/** Time spent publishing the current request's private output candidate. **/
+	public var outputPublicationMilliseconds(default, null): Int = 0;
+	/** Process-local evidence for the bounded macro-realm catalog owner. **/
+	public var targetReuseCatalogRealm(default, null): Null<TargetReuseCatalogRealmObservation>;
 	public var semanticLifecycle(default, null): Null<SemanticLifecycle>;
 
 	public function setOptions(options: BaseCompilerOptions) {
@@ -434,6 +483,114 @@ abstract class BaseCompiler {
 	public function beginProgramRevision(revision: ProgramRevision): Void {
 		programRevision = revision;
 		semanticLifecycle?.beginProgram();
+	}
+
+	/**
+		Records final plain-value program facts before target preparation starts.
+
+		The default target is reuse-ineligible. Targets may override the namespace,
+		revision-component, and blocker methods below to produce an exact
+		observation without exposing host compiler objects.
+	**/
+	final public function beginFinalProgramFingerprint(snapshot: FinalProgramFingerprintSnapshot, frameworkBlockers: Array<String>): Void {
+		programRevision = null;
+		finalProgramFingerprintAndKeyMilliseconds = null;
+		targetReuseLifecycleMilliseconds = null;
+		outputPublicationMilliseconds = 0;
+		finalProgramFingerprint = snapshot;
+		targetReuseCatalogRealm = TargetReuseCatalog.beginSharedRequest();
+		final blockers = frameworkBlockers.copy();
+		for(blocker in targetReuseBlockers(snapshot)) {
+			blockers.push(blocker);
+		}
+		final targetNamespace = targetReuseNamespace();
+		final revisionComponents = targetReuseRevisionComponents(snapshot);
+		if(targetNamespace != null && targetNamespace.length > 0) {
+			revisionComponents.push(new TargetReuseRevisionComponent(
+				ReflaxeImplementationRevision.COMPONENT_NAME,
+				ReflaxeImplementationRevision.current()
+			));
+		}
+		targetReuseProbe = TargetReuseProbe.build(snapshot, targetNamespace, revisionComponents, blockers);
+	}
+
+	/** Records the complete fingerprint/key cost immediately after sealing it. **/
+	final public function recordFinalProgramFingerprintAndKeyMilliseconds(value: Int): Void {
+		if(finalProgramFingerprint == null || targetReuseProbe == null) {
+			throw "Cannot record final-program fingerprint timing before the target reuse probe is sealed.";
+		}
+		if(value < 0) {
+			throw "Final-program fingerprint timing must not be negative.";
+		}
+		finalProgramFingerprintAndKeyMilliseconds = value;
+	}
+
+	/**
+		Records the complete target lifecycle after the final request key exists.
+
+		This duration includes either the ordinary compiler or exact replay plus
+		source publication and post-publication target work. Hosts record it
+		immediately before the target's request-finish hook so a target can emit
+		one honest miss-or-hit phase receipt without owning host orchestration.
+	**/
+	final public function recordTargetReuseLifecycleMilliseconds(value: Int): Void {
+		if(finalProgramFingerprint == null || targetReuseProbe == null) {
+			throw "Cannot record target lifecycle timing before the target reuse probe is sealed.";
+		}
+		if(value < 0) {
+			throw "Target lifecycle timing must not be negative.";
+		}
+		targetReuseLifecycleMilliseconds = value;
+	}
+
+	/**
+		Runs target work that is required only after an exact reuse miss.
+
+		The observation-only lifecycle always calls this hook. A future cache-hit
+		path may skip it only after the target's exact request key and replay
+		payload pass their independent correctness gates.
+	**/
+	public function prepareFinalProgram(moduleTypes: Array<ModuleType>, snapshot: FinalProgramFingerprintSnapshot): Void {}
+
+	/**
+		Attempts to reconstruct one exact reusable target result.
+
+		`ReflectCompiler` calls this only for an eligible probe and only after a
+		fresh private output transaction has started. Returning `true` means the
+		target wrote and validated the complete candidate, including a fresh
+		framework receipt and every target-owned file. Returning `false` aborts
+		the private candidate and continues through the one ordinary compiler.
+
+		Targets must catch and quarantine invalid cached payloads before returning
+		`false`. They must not publish output or retain a catalog lease here.
+	**/
+	public function tryReplayTargetReuse(): Bool {
+		return false;
+	}
+
+	/**
+		Finishes target-owned reuse state after the complete request boundary.
+
+		A target may admit a staged immutable payload only for `CompiledMiss`.
+		`Failed` must discard request-owned candidates, while `ExactHit` may update
+		observability only. Admission rejection changes a future request into a
+		miss and must not fail an otherwise successful compilation.
+	**/
+	public function finishTargetReuseRequest(outcome: TargetReuseRequestOutcome): Void {}
+
+	/** Returns the stable target catalog namespace, or `null` to opt out. **/
+	public function targetReuseNamespace(): Null<String> {
+		return null;
+	}
+
+	/** Returns exact target-owned revision inputs without raw sensitive values. **/
+	public function targetReuseRevisionComponents(snapshot: FinalProgramFingerprintSnapshot): Array<TargetReuseRevisionComponent> {
+		return [];
+	}
+
+	/** Returns stable reasons this request must not replay target source. **/
+	public function targetReuseBlockers(snapshot: FinalProgramFingerprintSnapshot): Array<String> {
+		return [];
 	}
 
 	/** Returns deterministic lifecycle evidence without exposing mutable state. **/
@@ -469,6 +626,37 @@ abstract class BaseCompiler {
 			this.output.generateFiles();
 		} else {
 			err("Attempted to output without being assigned destination.");
+		}
+	}
+
+	/**
+		Starts a private directory candidate before any target file is written.
+
+		`ReflectCompiler` owns this lifecycle. Target implementations should keep
+		using `output.saveFile` and should use `output.publicOutputDir` whenever a
+		stable user-requested path, rather than the active candidate path, is part
+		of configuration or diagnostics.
+	**/
+	public function beginOutputTransaction(): Void {
+		if(output != null) {
+			output.beginOutputTransaction();
+		}
+	}
+
+	/** Publishes the validated candidate after `onOutputComplete` succeeds. **/
+	public function commitOutputTransaction(): Void {
+		if(output != null) {
+			final started = haxe.Timer.stamp();
+			output.commitOutputTransaction();
+			final elapsed = Std.int((haxe.Timer.stamp() - started) * 1000.0);
+			outputPublicationMilliseconds += elapsed < 0 ? 0 : elapsed;
+		}
+	}
+
+	/** Discards private output after generation or target completion fails. **/
+	public function abortOutputTransaction(): Void {
+		if(output != null) {
+			output.abortOutputTransaction();
 		}
 	}
 

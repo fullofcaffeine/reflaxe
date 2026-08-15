@@ -2,6 +2,7 @@ package reflaxe.lifecycle;
 
 #if (macro || reflaxe_runtime)
 import haxe.crypto.Sha256;
+import haxe.macro.Type.TVar;
 import haxe.macro.Type.TypedExpr;
 
 /**
@@ -13,16 +14,25 @@ import haxe.macro.Type.TypedExpr;
 	can change that label to `value(5380)` even though the function still behaves
 	the same way. Hashing either label directly would make the program look changed.
 
-	This class replaces only that unstable number with the local's order inside
-	the current function. It keeps the rest of Haxe's detailed expression text, so
-	changes to code, types, field access, or control flow still change the
-	fingerprint. Two same-named variables in nested scopes remain distinct.
+	This class replaces only that unstable number with the declaration identity
+	from `LexicalLocalIdentityPlan`. It keeps the rest of Haxe's detailed
+	expression text, so changes to code, types, field access, or control flow still
+	change the fingerprint. Two same-named variables in nested scopes remain
+	distinct because their explicit structural paths differ.
 **/
 class NormalizedProgramBodyDigest {
+	#if reflaxe_lifecycle_test
+	static var digestCallCount:Int = 0;
+	#end
+
 	/** Returns the stable fingerprint for one function body. **/
-	public static function digestExpression(expression:TypedExpr):String {
+	public static function digestExpression(expression:TypedExpr, externalLocals:Array<TVar> = null):String {
+		#if reflaxe_lifecycle_test
+		digestCallCount += 1;
+		#end
 		final rendered = #if macro haxe.macro.TypedExprTools.toString(expression) #else Std.string(expression.expr) #end;
-		final normalized = normalizeLocalIds(rendered);
+		final localPlan = LexicalLocalIdentityPlan.build("normalized-body-digest", expression, externalLocals);
+		final normalized = normalizeLocalIds(rendered, localPlan);
 		#if macro
 		final expectedOccurrences = countLocalOccurrences(expression);
 		if (normalized.occurrenceCount != expectedOccurrences) {
@@ -32,16 +42,26 @@ class NormalizedProgramBodyDigest {
 		return Sha256.encode(normalized.rendered);
 	}
 
+	#if reflaxe_lifecycle_test
+	/** Resets the focused counter used to reject duplicate fingerprint walks. **/
+	public static function resetDigestCallCount():Void {
+		digestCallCount = 0;
+	}
+
+	/** Returns the number of typed expressions fingerprinted since reset. **/
+	public static function getDigestCallCount():Int {
+		return digestCallCount;
+	}
+	#end
+
 	/**
 		Rewrites only IDs in Haxe's detailed `Local` and `Var` records.
 
 		The scanner skips quoted strings so source literals that happen to contain
 		debug-renderer text remain part of the digest exactly as authored.
 	**/
-	static function normalizeLocalIds(rendered:String):NormalizedLocalIds {
+	static function normalizeLocalIds(rendered:String, localPlan:LexicalLocalIdentityPlan):NormalizedLocalIds {
 		final result = new StringBuf();
-		final canonicalIds:Map<String, Int> = [];
-		var nextCanonicalId = 0;
 		var occurrenceCount = 0;
 		var offset = 0;
 		var inQuotedString = false;
@@ -84,11 +104,7 @@ class NormalizedProgramBodyDigest {
 				continue;
 			}
 
-			var canonicalId = canonicalIds.get(hostId);
-			if (canonicalId == null) {
-				canonicalId = nextCanonicalId++;
-				canonicalIds.set(hostId, canonicalId);
-			}
+			final canonicalId = localPlan.requireHostId(parsedHostId).id;
 			result.add(rendered.substring(offset, idSpan.start));
 			result.add(canonicalId);
 			occurrenceCount += 1;

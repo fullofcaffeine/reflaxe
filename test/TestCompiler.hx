@@ -7,6 +7,13 @@ package;
 import haxe.macro.Expr;
 import haxe.macro.Context;
 import haxe.macro.Type;
+import haxe.macro.TypedExprTools;
+import haxe.crypto.Sha256;
+import haxe.crypto.Base64;
+import haxe.io.Bytes;
+import haxe.Json;
+import haxe.io.Path;
+import sys.io.File;
 
 // Required Reflaxe types.
 import reflaxe.ReflectCompiler;
@@ -27,11 +34,34 @@ using reflaxe.helpers.ClassFieldHelper;
 // This is a tool built into Reflaxe for modifying functions
 // before typing using @:build macros. 
 import reflaxe.input.ClassModifier;
+import reflaxe.lifecycle.FinalProgramFingerprintSnapshot;
 import reflaxe.lifecycle.FunctionBodyRevision;
+import reflaxe.lifecycle.ProgramRevision;
+import reflaxe.lifecycle.TargetReuseCatalog;
+import reflaxe.lifecycle.TargetReuseRequestOutcome;
+import reflaxe.lifecycle.TargetReuseRevisionComponent;
+import reflaxe.output.OutputMetadataCodec;
+
+typedef TestTargetReuseFile = {
+	final path:String;
+	final contentBase64:String;
+}
+
+typedef TestTargetReusePayload = {
+	final schemaVersion:Int;
+	final targetRequestRevision:String;
+	final files:Array<TestTargetReuseFile>;
+}
 
 class TestCompiler extends reflaxe.DirectToStringCompiler {
 	/** Raw subject-body hash captured before Reflaxe assigns the program revision. **/
 	var programRevisionProbeRawSubjectBody:Null<String>;
+	/** Stable subject-body hash captured through Reflaxe's lexical identity plan. **/
+	var programRevisionProbeStableSubjectBody:Null<String>;
+	/** Snapshot seen at the miss-only preparation boundary. **/
+	var preparedFinalProgramId:Null<String>;
+	/** Immutable test-target payload staged until the complete miss succeeds. **/
+	var stagedTargetReusePayload:Null<Bytes>;
 	
 	// This is the initialization macro used to make the compiler work!
 	// It can be a static function in any class, but we place it in
@@ -57,6 +87,7 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 			fileOutputExtension: ".testout",
 			outputDirDefineName: "testoutput",
 			fileOutputType: FilePerModule,
+			transactionalFileOutput: true,
 			ignoreTypes: [],
 			targetCodeInjectionName: "__testscript__",
 			ignoreBodilessFunctions: true,
@@ -75,16 +106,43 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 	}
 
 	override function onCompileStart() {
+		if(finalProgramFingerprint == null
+			|| targetReuseProbe == null
+			|| targetReuseProbe.requestRevision == null
+			|| preparedFinalProgramId != finalProgramFingerprint.id) {
+			Context.fatalError("The final-program fingerprint and target reuse probe were not sealed before target compilation.", Context.currentPos());
+		}
+		#if (haxe_ver < "5.0.0")
+		if(Context.defined("reflaxe_rtti_reuse_probe")) {
+			/*
+				Haxe 4.x can change its generated `__rtti` string between two
+				unchanged server requests. The target must still compile, but the
+				framework must explain why it did not reuse older generated files.
+			 */
+			final expectedBlocker = "reflaxe:source-authority:haxe4-compiler-generated-rtti-warm-input-unstable";
+			final blockers = targetReuseProbe.blockers();
+			if(targetReuseProbe.eligible || blockers.indexOf(expectedBlocker) == -1) {
+				Context.fatalError("Unstable Haxe 4.x RTTI input did not block exact target replay.", Context.currentPos());
+			}
+			setExtraFile("TargetReuseEligibility.testout", 'eligible=false\nblockers=${blockers.join(",")}\n');
+		}
+		#end
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			final revision = programRevision;
 			if(revision == null) {
 				Context.fatalError("The program revision was unavailable to the focused regression.", Context.currentPos());
 			}
 			final rawSubjectBody = programRevisionProbeRawSubjectBody;
-			if(rawSubjectBody == null) {
+			final stableSubjectBody = programRevisionProbeStableSubjectBody;
+			if(rawSubjectBody == null || stableSubjectBody == null) {
 				Context.fatalError("The retained fingerprint subject was unavailable to the focused regression.", Context.currentPos());
 			}
-			setExtraFile("ProgramRevision.testout", 'program=${revision.id}\nraw-subject-body=$rawSubjectBody\n');
+			final rawProbe = Context.defined("reflaxe_program_raw_revision_probe")
+				? 'raw-subject-body=$rawSubjectBody\n'
+				: "";
+			setExtraFile("ProgramRevision.testout",
+				'program=${revision.id}\nmodules=${revision.moduleCount}\nfunctions=${revision.functionCount}\n'
+				+ 'stable-subject-body=$stableSubjectBody\n$rawProbe');
 		}
 
 		// Let's compile the main function manually!
@@ -94,7 +152,193 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 		setExtraFile("Main.testout", "func main():\n" + compileExpression(getMainExpr()).tab());
 	}
 
+	override public function targetReuseNamespace():Null<String> {
+		return "reflaxe-test-target";
+	}
+
+	override public function targetReuseRevisionComponents(snapshot:FinalProgramFingerprintSnapshot):Array<TargetReuseRevisionComponent> {
+		return [
+			new TargetReuseRevisionComponent("target-implementation", "reflaxe-test-target-v1"),
+			new TargetReuseRevisionComponent("output-schema", "reflaxe-test-output-v1")
+		];
+	}
+
+	override public function targetReuseBlockers(snapshot:FinalProgramFingerprintSnapshot):Array<String> {
+		return Context.defined("reflaxe_target_reuse_fixture") ? [] : ["test-target:reuse-fixture-disabled"];
+	}
+
+	override public function prepareFinalProgram(moduleTypes:Array<ModuleType>, snapshot:FinalProgramFingerprintSnapshot):Void {
+		if(finalProgramFingerprint != snapshot || targetReuseProbe == null) {
+			Context.fatalError("Target preparation ran before the final-program reuse observation was available.", Context.currentPos());
+		}
+		if(Context.defined("reflaxe_target_reuse_fixture")) {
+			final requestRevision = targetReuseProbe.requestRevision;
+			if(requestRevision == null) {
+				Context.fatalError("Target reuse fixture has no exact request revision.", Context.currentPos());
+			}
+			final unexpectedLease = TargetReuseCatalog.shared().lookup(targetReuseNamespace(), requestRevision);
+			if(unexpectedLease != null) {
+				unexpectedLease.close();
+				Context.fatalError("Miss-only target preparation ran despite an exact reusable fixture entry.", Context.currentPos());
+			}
+		}
+		preparedFinalProgramId = snapshot.id;
+	}
+
+	override public function beginProgramRevision(revision:ProgramRevision):Void {
+		if(preparedFinalProgramId == null) {
+			Context.fatalError("The compatibility program revision was assigned before miss-only target preparation.", Context.currentPos());
+		}
+		super.beginProgramRevision(revision);
+	}
+
+	/**
+		Injects late output faults into the private candidate.
+
+		The server regression uses these branches to prove that `ReflectCompiler`
+		rejects malformed or unsafe candidates, aborts their private directory,
+		and leaves the prior complete public tree intact.
+	**/
+	override function onOutputComplete() {
+		if(Context.defined("reflaxe_output_transaction_fail_on_complete")) {
+			output.saveFile("FailureProbe.testout", "candidate-only");
+			throw "injected Reflaxe target completion failure";
+		}
+		if(Context.defined("reflaxe_output_transaction_malformed_receipt")) {
+			final candidateDirectory = output.outputDir;
+			if(candidateDirectory == null) {
+				throw "transaction receipt fault requires a candidate directory";
+			}
+			sys.io.File.saveContent(
+				haxe.io.Path.join([candidateDirectory, output.GENERATED_LIST_FILENAME]),
+				"{malformed"
+			);
+		}
+		if(Context.defined("reflaxe_output_transaction_escape")) {
+			output.saveFile("../EscapedFailureProbe.testout", "must-not-escape");
+		}
+		if(Context.defined("reflaxe_output_transaction_backslash_escape")) {
+			output.saveFile("..\\BackslashEscapeFailureProbe.testout", "must-not-escape");
+		}
+		if(Context.defined("reflaxe_output_transaction_absolute")) {
+			output.saveFile(haxe.io.Path.join([Sys.getCwd(), "AbsoluteFailureProbe.testout"]), "must-not-write-absolute");
+		}
+		if(Context.defined("reflaxe_target_reuse_fixture")) {
+			stagedTargetReusePayload = encodeTargetReusePayload();
+		}
+	}
+
+	override public function tryReplayTargetReuse():Bool {
+		if(!Context.defined("reflaxe_target_reuse_fixture")) {
+			return false;
+		}
+		final probe = targetReuseProbe;
+		if(probe == null || probe.requestRevision == null) {
+			throw "Target reuse fixture was called without an exact request revision.";
+		}
+		final requestRevision:String = probe.requestRevision;
+		final catalog = TargetReuseCatalog.shared();
+		final lease = catalog.lookup(targetReuseNamespace(), requestRevision);
+		if(lease == null) {
+			return false;
+		}
+		final payload = try {
+			decodeTargetReusePayload(lease.copyPayload(), requestRevision);
+		} catch(_:Dynamic) {
+			catalog.quarantine(targetReuseNamespace(), requestRevision);
+			lease.close();
+			return false;
+		}
+		lease.close();
+		for(file in payload.files) {
+			output.replayFrameworkFile(file.path, Base64.decode(file.contentBase64));
+		}
+		output.finishFrameworkReplay();
+		return true;
+	}
+
+	override public function finishTargetReuseRequest(outcome:TargetReuseRequestOutcome):Void {
+		if(Context.defined("reflaxe_target_reuse_fixture")
+			&& (targetReuseLifecycleMilliseconds == null || outputPublicationMilliseconds < 0)) {
+			Context.fatalError("Target reuse finish ran without complete non-negative lifecycle and publication timing.", Context.currentPos());
+		}
+		switch(outcome) {
+			case CompiledMiss:
+				final probe = targetReuseProbe;
+				final payload = stagedTargetReusePayload;
+				if(Context.defined("reflaxe_target_reuse_fixture")
+					&& probe != null
+					&& probe.eligible
+					&& probe.requestRevision != null
+					&& payload != null) {
+					final admission = TargetReuseCatalog.shared().admit(targetReuseNamespace(), probe.requestRevision, payload, 0);
+					if(!admission.admitted) {
+						throw 'Target reuse fixture admission failed: ${admission.reason}';
+					}
+				}
+			case ExactHit:
+			case Failed:
+		}
+		stagedTargetReusePayload = null;
+	}
+
+	function encodeTargetReusePayload():Bytes {
+		final probe = targetReuseProbe;
+		final outputDirectory = output.outputDir;
+		if(probe == null || probe.requestRevision == null || outputDirectory == null) {
+			throw "Target reuse fixture cannot encode output without current request and candidate paths.";
+		}
+		final receiptPath = Path.join([outputDirectory, output.GENERATED_LIST_FILENAME]);
+		final receipt = OutputMetadataCodec.decode(File.getContent(receiptPath), receiptPath);
+		final files = [
+			for(path in receipt.filesGenerated)
+				{
+					path: path,
+					contentBase64: Base64.encode(File.getBytes(Path.join([outputDirectory, path])))
+				}
+		];
+		return Bytes.ofString(Json.stringify({
+			schemaVersion: 1,
+			targetRequestRevision: probe.requestRevision,
+			files: files
+		}));
+	}
+
+	function decodeTargetReusePayload(bytes:Bytes, expectedRequestRevision:String):TestTargetReusePayload {
+		final payload:TestTargetReusePayload = Json.parse(bytes.toString());
+		if(payload.schemaVersion != 1
+			|| payload.targetRequestRevision != expectedRequestRevision
+			|| payload.files == null
+			|| payload.files.length == 0) {
+			throw "Target reuse fixture payload is invalid.";
+		}
+		return payload;
+	}
+
+	/**
+		Proves that post-publication target work sees only the stable public path.
+
+		The probe reports through a compiler warning instead of mutating the
+		framework-owned output tree after its generated-file receipt was sealed.
+	**/
+	override function onOutputPublished() {
+		if(!Context.defined("reflaxe_output_published_hook_probe")) {
+			return;
+		}
+		final activeDirectory = output.outputDir;
+		final publicDirectory = output.publicOutputDir;
+		if(activeDirectory == null
+			|| publicDirectory == null
+			|| haxe.io.Path.normalize(activeDirectory) != haxe.io.Path.normalize(publicDirectory)
+			|| activeDirectory.indexOf(".reflaxe-output-transaction") != -1) {
+			throw "post-publication hook observed private output state";
+		}
+		Context.warning("REFLAXE_OUTPUT_PUBLISHED_HOOK:PASS", Context.currentPos());
+	}
+
 	override function filterTypes(moduleTypes: Array<ModuleType>): Array<ModuleType> {
+		preparedFinalProgramId = null;
+		stagedTargetReusePayload = null;
 		if(Context.defined("reflaxe_program_revision_probe")) {
 			for(moduleType in moduleTypes) {
 				switch(moduleType) {
@@ -102,7 +346,8 @@ class TestCompiler extends reflaxe.DirectToStringCompiler {
 						final valueField = classRef.get().statics.get().filter(field -> field.name == "value")[0];
 						final expression = valueField.expr();
 						if(expression != null) {
-							programRevisionProbeRawSubjectBody = FunctionBodyRevision.digestExpression(expression);
+							programRevisionProbeRawSubjectBody = Sha256.encode(TypedExprTools.toString(expression));
+							programRevisionProbeStableSubjectBody = FunctionBodyRevision.digestExpression(expression);
 						}
 					case _:
 				}

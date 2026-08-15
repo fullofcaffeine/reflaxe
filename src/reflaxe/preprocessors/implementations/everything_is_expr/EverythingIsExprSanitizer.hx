@@ -330,15 +330,33 @@ class EverythingIsExprSanitizer {
 				);
 			}
 			case TBinop(op, e1, e2): {
-				final leftExpr = handleValueExpr(e1, "left", op.isAssign());
-				final rightExpr = handleValueExpr(e2, "right");
+				if((op == OpBoolAnd || op == OpBoolOr) && containsStatementOnlyValueSyntax(e2)) {
+					/*
+						The right side of `&&` and `||` is conditional: Haxe must not
+						evaluate it when the left side already decides the result.
 
-				#if reflaxe.allow_rose
-				final rose = ReassignOnSubfieldEdit.checkForROSE(this, op, leftExpr, rightExpr);
-				if(rose != null) {
-					rose;
-				} else #end {
-					TBinop(op, leftExpr, rightExpr);
+						A nested block or assignment normally becomes a temporary in the
+						surrounding scope. Doing that directly here would move the right
+						side before the short-circuit check. Expressing the operator as an
+						`if` gives the existing branch normalizer a scope that keeps those
+						temporaries conditional.
+					**/
+					final skippedValue = makeTExpr(TConst(TBool(op == OpBoolOr)), e2.pos, expr.t);
+					final conditional = makeTExpr(op == OpBoolAnd
+						? TIf(e1, e2, skippedValue)
+						: TIf(e1, skippedValue, e2), expr.pos, expr.t);
+					handleValueExpr(conditional, "shortCircuit").expr;
+				} else {
+					final leftExpr = handleValueExpr(e1, "left", op.isAssign());
+					final rightExpr = handleValueExpr(e2, "right");
+
+					#if reflaxe.allow_rose
+					final rose = ReassignOnSubfieldEdit.checkForROSE(this, op, leftExpr, rightExpr);
+					if(rose != null) {
+						rose;
+					} else #end {
+						TBinop(op, leftExpr, rightExpr);
+					}
 				}
 			}
 			case TField(e, field): {
@@ -1012,7 +1030,7 @@ class EverythingIsExprSanitizer {
 	function fixWhile(e: TypedExpr): TypedExpr {
 		switch(e.expr) {
 			case TWhile(econd, e, normalWhile): {
-				if(isDisallowedInWhile(econd)) {
+				if(containsStatementOnlyValueSyntax(econd)) {
 					final newCond = makeTExpr(TConst(TBool(true)), econd.pos, econd.t);
 					final ifExpr = makeTExpr(TIf(makeTExpr(TUnop(OpNot, false, econd)), makeTExpr(TBreak), null));
 					final newBlockExpr = makeTExpr(TBlock(normalWhile ? [ifExpr, e] : [e, ifExpr]));
@@ -1028,7 +1046,13 @@ class EverythingIsExprSanitizer {
 		return haxe.macro.TypedExprTools.map(e, fixWhile);
 	}
 
-	function isDisallowedInWhile(e: TypedExpr) {
+	/**
+		Reports whether normalizing a value can introduce statements around it.
+
+		A `while` condition must repeat those statements on every iteration. A
+		short-circuit right operand must also keep them behind its left-hand guard.
+	**/
+	function containsStatementOnlyValueSyntax(e: TypedExpr) {
 		return switch(e.expr) {
 			case TBlock(_): true;
 			case TIf(_, _, _): true;
@@ -1037,11 +1061,11 @@ class EverythingIsExprSanitizer {
 			case TBinop(OpAssign, _, _): true;
 			case TBinop(OpAssignOp(_), _, _): true;
 			case TUnop(OpIncrement | OpDecrement, _, _): true;
-			case TParenthesis(e1) | TMeta(_, e1): isDisallowedInWhile(e1);
+			case TParenthesis(e1) | TMeta(_, e1): containsStatementOnlyValueSyntax(e1);
 			case _: {
 				var result = false;
 				haxe.macro.TypedExprTools.iter(e, function(e) {
-					if(isDisallowedInWhile(e)) {
+					if(containsStatementOnlyValueSyntax(e)) {
 						result = true;
 					}
 				});

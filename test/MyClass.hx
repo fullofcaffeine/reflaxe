@@ -1,5 +1,8 @@
 package;
 
+#if reflaxe_rtti_reuse_probe
+@:rtti
+#end
 @:native("MyNativeClass")
 class MyClass {
 	@:native("nativeMain")
