@@ -39,7 +39,7 @@ class NormalizedProgramBodyDigest {
 			throw '[reflaxe:unsupported-program-revision-renderer] Haxe rendered $expectedOccurrences local-variable records, but Reflaxe recognized ${normalized.occurrenceCount}. Update the normalizer for this Haxe version instead of accepting unstable program fingerprints.';
 		}
 		#end
-		return Sha256.encode(normalized.rendered);
+		return #if macro MacroSha256.encode(normalized.rendered) #else Sha256.encode(normalized.rendered) #end;
 	}
 
 	#if reflaxe_lifecycle_test
@@ -84,6 +84,11 @@ class NormalizedProgramBodyDigest {
 
 			if (character == '"') {
 				inQuotedString = true;
+				result.add(character);
+				offset += 1;
+				continue;
+			}
+			if (character != "[") {
 				result.add(character);
 				offset += 1;
 				continue;
