@@ -1230,6 +1230,10 @@ class SemanticLifecycleTest {
 		final family = new TestEnvelopeFamily(StructuralEnvelope, [NoOp.ID => Preserve, MutateBodyInPlace.ID => Preserve]);
 		FunctionBodyRevision.resetDigestCallCount();
 		lifecycle(family).process(data, compiler(), [Custom(new NoOp()), Custom(new MutateBodyInPlace()), Custom(new NoOp())]);
+		if (family.snapshotCallCount != 4) {
+			Context.fatalError('a three-pass lifecycle observed the same expression boundary more than once (${family.snapshotCallCount} snapshots)',
+				Context.currentPos());
+		}
 		if (FunctionBodyRevision.getDigestCallCount() != 2) {
 			Context.fatalError("a structural lifecycle did more than its entry and exit body-revision checks", Context.currentPos());
 		}
@@ -1377,12 +1381,15 @@ private class TestEnvelopeFamily extends SemanticArtifactFamily {
 
 	final actions:Map<String, SemanticPreprocessorAction>;
 
+	public var snapshotCallCount(default, null):Int = 0;
+
 	public function new(binding:SemanticArtifactBinding, actions:Map<String, SemanticPreprocessorAction>) {
 		super(ID, binding);
 		this.actions = actions;
 	}
 
 	public function snapshot(data:ClassFuncData):Array<SemanticArtifactSnapshot> {
+		snapshotCallCount++;
 		final result:Array<SemanticArtifactSnapshot> = [];
 		if (data.expr == null) {
 			return result;

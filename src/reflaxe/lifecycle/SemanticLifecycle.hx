@@ -83,10 +83,15 @@ class SemanticLifecycle {
 		// Establish an exact entry revision so mutations made before this lifecycle
 		// cannot be attributed to its first preprocessor.
 		data.synchronizeBodyRevision();
+		final observedByFamily:Map<String, Array<SemanticArtifactSnapshot>> = [];
+		final observedRevisionByFamily:Map<String, String> = [];
 		final states = [
 			for (family in options.families) {
 				final artifacts = takeSnapshot(family, data, "initial");
-				new SemanticFamilyState(family, artifacts.length == 0 ? Absent : Valid(revisionFor(family, data), artifacts));
+				final revision = revisionFor(family, data);
+				observedByFamily.set(family.id, artifacts);
+				observedRevisionByFamily.set(family.id, revision);
+				new SemanticFamilyState(family, artifacts.length == 0 ? Absent : Valid(revision, artifacts));
 			}
 		];
 
@@ -98,8 +103,12 @@ class SemanticLifecycle {
 			final actionByFamily:Map<String, SemanticPreprocessorAction> = [];
 
 			for (state in states) {
-				final before = takeSnapshot(state.family, data, preprocessorId);
-				final beforeRevision = revisionFor(state.family, data);
+				// The preceding boundary already observed this exact body after the
+				// previous preprocessor returned. No code can mutate the function
+				// between these two lifecycle-owned boundaries, so reuse that result
+				// instead of walking the complete expression tree again.
+				final before:Array<SemanticArtifactSnapshot> = cast observedByFamily.get(state.family.id);
+				final beforeRevision:String = cast observedRevisionByFamily.get(state.family.id);
 				assertStateStillMatches(state, before, beforeRevision, preprocessorId);
 				final action = state.family.actionFor(preprocessor.lifecycleId());
 				if (action == Reject && !isAbsent(state.status, before)) {
@@ -124,16 +133,22 @@ class SemanticLifecycle {
 				final before:Array<SemanticArtifactSnapshot> = cast beforeByFamily.get(family.id);
 				final beforeRevision:String = cast beforeRevisionByFamily.get(family.id);
 				final after = takeSnapshot(family, data, preprocessorId);
+				final afterRevision = revisionFor(family, data);
 				final action:SemanticPreprocessorAction = cast actionByFamily.get(family.id);
-				state.status = applyAction(state, preprocessorId, action, beforeRevision, revisionFor(family, data), before, after);
+				state.status = applyAction(state, preprocessorId, action, beforeRevision, afterRevision, before, after);
+				observedByFamily.set(family.id, after);
+				observedRevisionByFamily.set(family.id, afterRevision);
 				record(data, preprocessorId, "after", family.id, action, after);
 			}
 		}
 
 		for (state in states) {
 			final family = state.family;
-			final artifacts = takeSnapshot(family, data, "final");
-			final finalRevision = revisionFor(family, data);
+			// The last after-pass observation is also the final lifecycle boundary.
+			// Reusing it preserves final validation while avoiding another identical
+			// whole-body traversal. With no preprocessors, this is the entry snapshot.
+			final artifacts:Array<SemanticArtifactSnapshot> = cast observedByFamily.get(family.id);
+			final finalRevision:String = cast observedRevisionByFamily.get(family.id);
 			switch (state.status) {
 				case Absent:
 					if (artifacts.length != 0) {
