@@ -66,6 +66,7 @@ class NormalizedProgramBodyDigest {
 		var offset = 0;
 		var inQuotedString = false;
 		var escaped = false;
+		var nextQuote = rendered.indexOf('"');
 
 		while (offset < rendered.length) {
 			final character = rendered.charAt(offset);
@@ -89,8 +90,19 @@ class NormalizedProgramBodyDigest {
 				continue;
 			}
 			if (character != "[") {
-				result.add(character);
-				offset += 1;
+				// Only a quote or opening bracket can start a meaningful record here.
+				// Copy other text unchanged. Retaining the next quote avoids repeatedly
+				// searching the remaining body when many brackets precede that quote.
+				if (nextQuote >= 0 && nextQuote < offset)
+					nextQuote = rendered.indexOf('"', offset);
+				final nextBracket = rendered.indexOf("[", offset);
+				var end = rendered.length;
+				if (nextQuote >= 0 && nextQuote < end)
+					end = nextQuote;
+				if (nextBracket >= 0 && nextBracket < end)
+					end = nextBracket;
+				result.add(rendered.substring(offset, end));
+				offset = end;
 				continue;
 			}
 

@@ -346,7 +346,10 @@ class LexicalLocalIdentity {
 			path,
 			name
 		].map(encodePart).join("|");
-		return new LexicalLocalIdentity(LexicalLocalIdentityPlan.ID_PREFIX + Sha256.encode(payload), ownerId, kind, path, name);
+		// MacroSha256 preserves the existing string digest bytes while avoiding the
+		// standard implementation's whole-input integer array in the evaluator.
+		final digest = #if macro MacroSha256.encode(payload) #else Sha256.encode(payload) #end;
+		return new LexicalLocalIdentity(LexicalLocalIdentityPlan.ID_PREFIX + digest, ownerId, kind, path, name);
 	}
 
 	static inline function encodePart(value:String):String {
@@ -384,8 +387,8 @@ class LexicalFunctionOccurrenceIdentity {
 			ownerId,
 			path
 		].map(LexicalLocalIdentity.encodePart).join("|");
-		return new LexicalFunctionOccurrenceIdentity(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + Sha256.encode(payload), ownerId, path,
-			parentOccurrenceId);
+		final digest = #if macro MacroSha256.encode(payload) #else Sha256.encode(payload) #end;
+		return new LexicalFunctionOccurrenceIdentity(LexicalLocalIdentityPlan.FUNCTION_OCCURRENCE_ID_PREFIX + digest, ownerId, path, parentOccurrenceId);
 	}
 }
 #end
