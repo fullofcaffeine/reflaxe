@@ -9,6 +9,11 @@ import reflaxe.lifecycle.NormalizedProgramBodyDigest;
 /** Keeps every non-ID character intact when the body normalizer copies text in blocks. */
 class ProgramBodyNormalizationTest {
 	public static function run():Void {
+		Context.onAfterInitMacros(execute);
+	}
+
+	/** Typed-expression APIs become available after initialization macros finish. */
+	static function execute():Void {
 		final body = Context.typeExpr(macro {
 			var value = 1;
 			final nested = function(value:String):String {
