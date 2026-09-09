@@ -63,6 +63,7 @@ class ProgramBodyNormalizationTest {
 		final quoted = '"[Local value($host):Int]"';
 		final escaped = '"escaped\\\" $token"';
 		final padding = StringTools.lpad("", " ", 16384);
+		final quotedSequence = [for (_ in 0...4096) '"plain" '].join("");
 		final cases = [
 			{input: "", expected: "", count: 0},
 			{input: "plain é🙂 text", expected: "plain é🙂 text", count: 0},
@@ -75,6 +76,8 @@ class ProgramBodyNormalizationTest {
 			{input: 'before $token after', expected: 'before $replacement after', count: 1},
 			{input: token + token, expected: replacement + replacement, count: 2},
 			{input: padding + token + padding, expected: padding + replacement + padding, count: 1},
+			{input: quotedSequence, expected: quotedSequence, count: 0},
+			{input: quotedSequence + token, expected: quotedSequence + replacement, count: 1},
 			{input: 'é🙂 $quoted $token $quoted $token', expected: 'é🙂 $quoted $replacement $quoted $replacement', count: 2},
 			{input: '$escaped $token', expected: '$escaped $replacement', count: 1},
 			{input: '"slashes\\\\" $token', expected: '"slashes\\\\" $replacement', count: 1}
