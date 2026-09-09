@@ -18,6 +18,7 @@
 --macro RemovePureExpressionsTest.run()
 --macro RemoveReassignedVariableDeclarationsTest.run()
 --macro SemanticLifecycleTest.run()
+--macro ProgramBodyNormalizationTest.run()
 -D reflaxe_lifecycle_test
 
 # ---

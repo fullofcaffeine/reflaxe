@@ -66,6 +66,8 @@ class NormalizedProgramBodyDigest {
 		var offset = 0;
 		var inQuotedString = false;
 		var escaped = false;
+		var nextQuote = rendered.indexOf('"');
+		var nextBracket = rendered.indexOf("[");
 
 		while (offset < rendered.length) {
 			final character = rendered.charAt(offset);
@@ -89,8 +91,20 @@ class NormalizedProgramBodyDigest {
 				continue;
 			}
 			if (character != "[") {
-				result.add(character);
-				offset += 1;
+				// Only a quote or opening bracket can start a meaningful record here.
+				// Copy other text unchanged. Retaining both delimiter positions avoids
+				// searching the same suffix again when one delimiter appears rarely.
+				if (nextQuote >= 0 && nextQuote < offset)
+					nextQuote = rendered.indexOf('"', offset);
+				if (nextBracket >= 0 && nextBracket < offset)
+					nextBracket = rendered.indexOf("[", offset);
+				var end = rendered.length;
+				if (nextQuote >= 0 && nextQuote < end)
+					end = nextQuote;
+				if (nextBracket >= 0 && nextBracket < end)
+					end = nextBracket;
+				result.add(rendered.substring(offset, end));
+				offset = end;
 				continue;
 			}
 
